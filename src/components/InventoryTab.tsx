@@ -1,15 +1,15 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Product, Category, ProcessMovementResult } from '@/types';
 import { tenantConfig } from '@/config/tenantConfig';
 import { showToast } from '@/components/ToastContainer';
-import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { DashboardMetrics } from '@/components/DashboardMetrics';
 import { SearchAndActions } from '@/components/SearchAndActions';
 import { CategoryFilter } from '@/components/CategoryFilter';
 import { ProductCard } from '@/components/ProductCard';
 import { ProductFormModal, type ProductFormData } from '@/components/ProductFormModal';
 import { SaleModal } from '@/components/SaleModal';
+import { ScanModal } from '@/components/ScanModal';
 import { exportProductsToExcel, parseExcelFile, downloadTemplate } from '@/lib/excel';
 import { Plus, PackageX } from 'lucide-react';
 
@@ -31,7 +31,7 @@ export function InventoryTab({
   const [criticalFilter, setCriticalFilter] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
-  const [scanActive, setScanActive] = useState(false);
+  const [showScan, setShowScan] = useState(false);
   const [sellProduct, setSellProduct] = useState<Product | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
 
@@ -187,15 +187,10 @@ export function InventoryTab({
         showToast(`Código no encontrado: ${code}`, 'info');
         setSearch(code);
       }
-      setScanActive(false);
+      setShowScan(false);
     },
     [products],
   );
-
-  useBarcodeScanner({
-    onScan: handleBarcodeScan,
-    enabled: scanActive,
-  });
 
   const handleImport = async (file: File) => {
     showToast('Procesando archivo...', 'info');
@@ -279,10 +274,7 @@ export function InventoryTab({
       <SearchAndActions
         search={search}
         onSearchChange={setSearch}
-        onScanClick={() => {
-          setScanActive(!scanActive);
-          if (!scanActive) showToast('Escáner activo — pase el código', 'info');
-        }}
+        onScanClick={() => setShowScan(true)}
         onImportClick={() => importFileRef.current?.click()}
         onExportClick={() => {
           if (products.length === 0) {
@@ -296,7 +288,7 @@ export function InventoryTab({
           downloadTemplate();
           showToast('Plantilla descargada', 'success');
         }}
-        scanActive={scanActive}
+        scanActive={showScan}
       />
 
       <input
@@ -407,6 +399,13 @@ export function InventoryTab({
           }}
         />
       )}
+
+      <ScanModal
+        open={showScan}
+        onClose={() => setShowScan(false)}
+        onScan={handleBarcodeScan}
+        products={products}
+      />
     </div>
   );
 }
