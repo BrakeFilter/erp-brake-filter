@@ -1,0 +1,452 @@
+import { useState, useRef } from 'react';
+import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight } from 'lucide-react';
+import type { Category } from '@/types';
+import { supabase } from '@/lib/supabase';
+import { showToast } from '@/components/ToastContainer';
+import { ProductImage } from '@/components/ProductImage';
+
+export interface ProductFormData {
+  id?: string;
+  sku: string;
+  barcode: string | null;
+  name: string;
+  description: string | null;
+  brand: string | null;
+  category_id: string | null;
+  location: string | null;
+  stock_current: number;
+  stock_min: number;
+  price_total: number;
+  price_sale: number;
+  weight_kg: number;
+  image_url: string | null;
+}
+
+interface ProductFormModalProps {
+  open: boolean;
+  initialData?: Partial<ProductFormData> | null;
+  categories: Category[];
+  onSave: (data: ProductFormData) => void;
+  onClose: () => void;
+}
+
+const emptyForm: ProductFormData = {
+  sku: '',
+  barcode: null,
+  name: '',
+  description: null,
+  brand: null,
+  category_id: null,
+  location: null,
+  stock_current: 0,
+  stock_min: 0,
+  price_total: 0,
+  price_sale: 0,
+  weight_kg: 0,
+  image_url: null,
+};
+
+export function ProductFormModal({
+  open,
+  initialData,
+  categories,
+  onSave,
+  onClose,
+}: ProductFormModalProps) {
+  const [form, setForm] = useState<ProductFormData>(
+    initialData ? { ...emptyForm, ...initialData } : emptyForm,
+  );
+  const [uploading, setUploading] = useState(false);
+  const [imageMode, setImageMode] = useState<'upload' | 'url'>('upload');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  if (!open) return null;
+
+  const update = (field: keyof ProductFormData, value: string | number | null) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleImageUpload = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      showToast('El archivo debe ser una imagen', 'error');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('La imagen no debe superar 5MB', 'error');
+      return;
+    }
+
+    setUploading(true);
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const filePath = `products/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('product-images')
+      .upload(filePath, file, { cacheControl: '3600', upsert: false });
+
+    if (uploadError) {
+      showToast(`Error al subir imagen: ${uploadError.message}`, 'error');
+      setUploading(false);
+      return;
+    }
+
+    const { data: urlData } = supabase.storage
+      .from('product-images')
+      .getPublicUrl(filePath);
+
+    update('image_url', urlData.publicUrl);
+    showToast('Imagen subida correctamente', 'success');
+    setUploading(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.sku.trim() || !form.name.trim()) return;
+    onSave({
+      ...form,
+      sku: form.sku.trim().toUpperCase(),
+      barcode: form.barcode?.trim() || null,
+    });
+  };
+
+  const sortedCategories = [...categories].sort((a, b) => a.sort_order - b.sort_order);
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto animate-slide-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 sticky top-0 bg-white z-10">
+          <div className="flex items-center gap-2">
+            <Package className="w-5 h-5 text-red-600" />
+            <h3 className="font-semibold text-slate-900 text-base sm:text-lg">
+              {initialData?.id ? 'Editar Producto' : 'Nuevo Producto'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-4">
+          {/* Product Image */}
+          <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+            <label className="block text-xs font-medium text-slate-600 mb-2">
+              Foto del Producto
+            </label>
+            <div className="flex items-start gap-4">
+              <ProductImage
+                src={form.image_url}
+                alt={form.name || 'Producto'}
+                size="lg"
+                className="!w-20 !h-20 !rounded-xl"
+              />
+              <div className="flex-1 space-y-2">
+                <div className="flex gap-1 bg-white border border-slate-200 rounded-lg p-0.5 w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setImageMode('upload')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                      imageMode === 'upload' ? 'bg-slate-900 text-white' : 'text-slate-500'
+                    }`}
+                  >
+                    <Upload className="w-3 h-3" /> Subir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImageMode('url')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                      imageMode === 'url' ? 'bg-slate-900 text-white' : 'text-slate-500'
+                    }`}
+                  >
+                    <Link2 className="w-3 h-3" /> URL
+                  </button>
+                </div>
+
+                {imageMode === 'upload' ? (
+                  <div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleImageUpload(file);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-all disabled:opacity-50"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      {uploading ? 'Subiendo...' : 'Seleccionar imagen'}
+                    </button>
+                    {form.image_url && (
+                      <button
+                        type="button"
+                        onClick={() => update('image_url', null)}
+                        className="ml-2 text-xs text-red-500 hover:text-red-600"
+                      >
+                        Quitar imagen
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    type="url"
+                    value={form.image_url || ''}
+                    onChange={(e) => update('image_url', e.target.value || null)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                    placeholder="https://ejemplo.com/filtro.jpg"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                  />
+                )}
+                <p className="text-[11px] text-slate-400">
+                  Sube una foto o pega una URL. Si no se asigna, se usa imagen por defecto.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* SKU + Barcode */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                SKU / Código Interno <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={form.sku}
+                onChange={(e) => update('sku', e.target.value)}
+                required
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="Ej: BF-AIRE-001"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Código de Barras
+              </label>
+              <input
+                type="text"
+                value={form.barcode || ''}
+                onChange={(e) => update('barcode', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="Ej: 7800000000017"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          {/* Name + Brand */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Nombre / Descripción corta <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => update('name', e.target.value)}
+                required
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="Ej: Filtro de Aceite Motor 1.6L"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Marca</label>
+              <input
+                type="text"
+                value={form.brand || ''}
+                onChange={(e) => update('brand', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="Ej: BOSCH"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          {/* Category + Location */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Categoría</label>
+              <select
+                value={form.category_id || ''}
+                onChange={(e) => update('category_id', e.target.value || null)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 bg-white"
+              >
+                <option value="">Sin categoría</option>
+                {sortedCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Ubicación Física</label>
+              <input
+                type="text"
+                value={form.location || ''}
+                onChange={(e) => update('location', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="Ej: A-01-03"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              Descripción Extendida
+            </label>
+            <textarea
+              value={form.description || ''}
+              onChange={(e) => update('description', e.target.value)}
+              rows={2}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 resize-none"
+              placeholder="Detalle técnico del repuesto..."
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+          </div>
+
+          {/* Stock */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Stock Actual</label>
+              <input
+                type="number"
+                value={form.stock_current}
+                onChange={(e) => update('stock_current', parseInt(e.target.value) || 0)}
+                min={0}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Stock Mínimo</label>
+              <input
+                type="number"
+                value={form.stock_min}
+                onChange={(e) => update('stock_min', parseInt(e.target.value) || 0)}
+                min={0}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+              />
+            </div>
+          </div>
+
+          {/* Prices + Weight */}
+          <div className="bg-slate-900 rounded-xl p-4 text-white">
+            <div className="flex items-center gap-2 mb-3">
+              <DollarSign className="w-4 h-4 text-red-400" />
+              <h4 className="text-sm font-semibold">Precios e Información de Envío</h4>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Precio de Compra (IVA Incluido) <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="number"
+                  value={form.price_total}
+                  onChange={(e) => update('price_total', parseFloat(e.target.value) || 0)}
+                  min={0}
+                  step="any"
+                  required
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Precio de Venta Base (IVA Incluido)
+                </label>
+                <input
+                  type="number"
+                  value={form.price_sale}
+                  onChange={(e) => update('price_sale', parseFloat(e.target.value) || 0)}
+                  min={0}
+                  step="any"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="0"
+                />
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-slate-400 mb-1">
+                Peso (kg) <span className="text-red-400">*</span>
+              </label>
+              <div className="relative">
+                <Weight className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  type="number"
+                  value={form.weight_kg}
+                  onChange={(e) => update('weight_kg', parseFloat(e.target.value) || 0)}
+                  min={0}
+                  step="0.01"
+                  required
+                  className="w-full pl-9 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="0.5"
+                />
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Usado para cálculo automático de costo de envío en Mercado Libre
+              </p>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2.5 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors shadow-sm"
+            >
+              {initialData?.id ? 'Guardar Cambios' : 'Crear Producto'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
