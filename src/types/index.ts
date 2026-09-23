@@ -12,6 +12,17 @@ export interface CompanyConfig {
   updated_at: string;
 }
 
+export interface CompanySettings {
+  id: string;
+  company_name: string;
+  logo_url: string | null;
+  primary_color: string;
+  font_family: string;
+  active_modules: Record<string, boolean>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -35,6 +46,9 @@ export interface Product {
   price_total: number;
   price_sale: number;
   weight_kg: number;
+  height_cm: number;
+  width_cm: number;
+  length_cm: number;
   image_url: string | null;
   created_at: string;
   updated_at: string;
@@ -91,6 +105,50 @@ export interface OperationalExpense {
   created_at: string;
 }
 
+export interface VehicleCompatibility {
+  id: string;
+  product_id: string;
+  brand: string;
+  model: string;
+  year_from: number;
+  year_to: number;
+  engine: string | null;
+  created_at: string;
+  products?: Product;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  rut: string | null;
+  contact_name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  created_at: string;
+}
+
+export type PurchaseOrderStatus = 'pendiente' | 'enviada' | 'recibida';
+
+export interface PurchaseOrderItem {
+  sku: string;
+  name: string;
+  barcode: string | null;
+  quantity: number;
+  unit_cost: number;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  supplier_id: string | null;
+  status: PurchaseOrderStatus;
+  items: PurchaseOrderItem[];
+  total_cost: number;
+  created_at: string;
+  updated_at: string;
+  suppliers?: Supplier;
+}
+
 export interface ProcessMovementResult {
   success: boolean;
   product_id?: string;
@@ -100,4 +158,15 @@ export interface ProcessMovementResult {
   error?: string;
 }
 
-export type TabKey = 'inventario' | 'facturacion' | 'historial' | 'costos' | 'metricas';
+export type TabKey =
+  | 'inventario'
+  | 'facturacion'
+  | 'historial'
+  | 'costos'
+  | 'metricas'
+  | 'vehiculos'
+  | 'proveedores'
+  | 'ordenes'
+  | 'ajustes';
+
+export type ShippingCompany = 'starken' | 'chilexpress' | 'bluex' | 'otro' | 'retiro';
