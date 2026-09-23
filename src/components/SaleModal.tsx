@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle } from 'lucide-react';
-import type { Product, SaleChannel } from '@/types';
+import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle, Percent, Package } from 'lucide-react';
+import type { Product, SaleChannel, ShippingCompany } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
 import { ProductImage } from '@/components/ProductImage';
@@ -20,6 +20,10 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
   const [overrideShipping, setOverrideShipping] = useState(false);
   const [customShipping, setCustomShipping] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [commission19, setCommission19] = useState(false);
+  const [shippingType, setShippingType] = useState<'despacho' | 'retiro'>('retiro');
+  const [shippingCompany, setShippingCompany] = useState<ShippingCompany>('starken');
+  const [shippingCostManual, setShippingCostManual] = useState(0);
 
   const purchasePrice = product.price_total;
 
@@ -43,6 +47,12 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
   const totalMargin = calc.netMargin * quantity;
   const totalShipping = (overrideShipping ? customShipping : calc.shippingCost) * quantity;
   const totalCommission = calc.commission * quantity;
+
+  const subtotal = salePrice * quantity;
+  const commissionAmount = commission19 ? Math.round(subtotal * 0.19) : 0;
+  const totalWithCommission = subtotal + commissionAmount;
+  const finalShippingCost = shippingType === 'retiro' ? 0 : (overrideShipping ? customShipping : shippingCostManual);
+  const finalTotal = totalWithCommission + finalShippingCost;
 
   const handleSale = async () => {
     if (quantity < 1 || quantity > product.stock_current) {
@@ -84,16 +94,16 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
         .from('movements')
         .update({
           sale_channel: channel,
-          sale_price: salePrice * quantity,
-          shipping_cost: totalShipping,
-          commission: totalCommission,
-          net_margin: totalMargin,
+          sale_price: totalWithCommission,
+          shipping_cost: finalShippingCost,
+          commission: commissionAmount + totalCommission,
+          net_margin: totalWithCommission - (purchasePrice * quantity) - finalShippingCost - totalCommission - commissionAmount,
         })
         .eq('id', movementData.id);
     }
 
     showToast(
-      `Venta registrada: ${quantity}x ${product.name} — Margen: ${formatCurrency(totalMargin)}`,
+      `Venta registrada: ${quantity}x ${product.name} — Total: ${formatCurrency(finalTotal)}`,
       totalMargin < 0 ? 'error' : 'success',
     );
 
@@ -231,6 +241,63 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
           )}
 
+          {/* Commission 19% + Shipping Options */}
+          <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-3">
+            {/* Commission checkbox */}
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={commission19}
+                onChange={(e) => setCommission19(e.target.checked)} className="rounded" />
+              <Percent className="w-4 h-4 text-red-500" />
+              <span className="font-medium">Comisión 19% venta</span>
+              {commission19 && (
+                <span className="text-xs text-red-600 font-bold">+{formatCurrency(commissionAmount)}</span>
+              )}
+            </label>
+
+            {/* Shipping type */}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">Tipo de Entrega</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setShippingType('retiro')}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                    shippingType === 'retiro' ? 'border-green-500 bg-green-50 text-green-700' : 'border-slate-200 text-slate-500'}`}>
+                  <Package className="w-4 h-4" />
+                  Retiro en Local
+                </button>
+                <button type="button" onClick={() => setShippingType('despacho')}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                    shippingType === 'despacho' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500'}`}>
+                  <Truck className="w-4 h-4" />
+                  Despacho
+                </button>
+              </div>
+            </div>
+
+            {shippingType === 'despacho' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Empresa Envío</label>
+                  <select value={shippingCompany}
+                    onChange={(e) => setShippingCompany(e.target.value as ShippingCompany)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 bg-white">
+                    <option value="starken">Starken</option>
+                    <option value="chilexpress">Chilexpress</option>
+                    <option value="bluex">Bluex</option>
+                    <option value="otro">Otro</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Costo Envío ($)</label>
+                  <input type="number" value={shippingCostManual}
+                    onChange={(e) => setShippingCostManual(parseFloat(e.target.value) || 0)}
+                    min={0} step="any"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                    placeholder="0" />
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Margin Breakdown */}
           <div className="bg-slate-900 rounded-xl p-4 text-white space-y-2">
             <div className="flex items-center gap-2 mb-1">
@@ -264,14 +331,22 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
                 <span className="text-red-400">-{formatCurrency(totalShipping)}</span>
               </div>
             )}
+            {commission19 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Comisión 19%</span>
+                <span className="text-red-400">+{formatCurrency(commissionAmount)}</span>
+              </div>
+            )}
+            {shippingType === 'despacho' && finalShippingCost > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Envío ({shippingCompany})</span>
+                <span className="text-red-400">+{formatCurrency(finalShippingCost)}</span>
+              </div>
+            )}
 
             <div className="flex justify-between pt-2 border-t border-slate-700">
-              <span className="text-slate-300 font-medium">Margen Neto Total</span>
-              <span
-                className={`text-lg font-bold ${totalMargin >= 0 ? 'text-green-400' : 'text-red-400'}`}
-              >
-                {formatCurrency(totalMargin)}
-              </span>
+              <span className="text-slate-300 font-medium">Total Venta</span>
+              <span className="text-lg font-bold text-white">{formatCurrency(finalTotal)}</span>
             </div>
           </div>
 

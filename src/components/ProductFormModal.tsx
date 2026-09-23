@@ -1,9 +1,11 @@
-import { useState, useRef } from 'react';
-import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight } from 'lucide-react';
+import { useState, useRef, useMemo } from 'react';
+import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight, ScanLine, Ruler, Truck } from 'lucide-react';
 import type { Category } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
 import { ProductImage } from '@/components/ProductImage';
+import { formatCurrency } from '@/lib/utils';
+import { Html5Qrcode } from 'html5-qrcode';
 
 export interface ProductFormData {
   id?: string;
@@ -19,6 +21,9 @@ export interface ProductFormData {
   price_total: number;
   price_sale: number;
   weight_kg: number;
+  height_cm: number;
+  width_cm: number;
+  length_cm: number;
   image_url: string | null;
 }
 
@@ -43,6 +48,9 @@ const emptyForm: ProductFormData = {
   price_total: 0,
   price_sale: 0,
   weight_kg: 0,
+  height_cm: 0,
+  width_cm: 0,
+  length_cm: 0,
   image_url: null,
 };
 
@@ -58,7 +66,18 @@ export function ProductFormModal({
   );
   const [uploading, setUploading] = useState(false);
   const [imageMode, setImageMode] = useState<'upload' | 'url'>('upload');
+  const [showBarcodeScan, setShowBarcodeScan] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const html5QrRef = useRef<Html5Qrcode | null>(null);
+
+  const mlShippingPreview = useMemo(() => {
+    const h = form.height_cm || 0;
+    const w = form.width_cm || 0;
+    const l = form.length_cm || 0;
+    const kg = form.weight_kg || 0;
+    if (h === 0 && w === 0 && l === 0 && kg === 0) return 0;
+    return Math.round((h * w * l / 5000) * 1500 + kg * 2000);
+  }, [form.height_cm, form.width_cm, form.length_cm, form.weight_kg]);
 
   if (!open) return null;
 
@@ -100,6 +119,34 @@ export function ProductFormModal({
     setUploading(false);
   };
 
+  const startBarcodeCamera = async () => {
+    setShowBarcodeScan(true);
+    setTimeout(async () => {
+      try {
+        const html5Qr = new Html5Qrcode('barcode-scan-view');
+        html5QrRef.current = html5Qr;
+        await html5Qr.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 200, height: 120 } },
+          (decoded: string) => {
+            update('barcode', decoded);
+            showToast(`Código leído: ${decoded}`, 'success');
+            stopBarcodeCamera();
+          },
+          () => {},
+        );
+      } catch { showToast('No se pudo acceder a la cámara', 'error'); }
+    }, 100);
+  };
+
+  const stopBarcodeCamera = async () => {
+    if (html5QrRef.current) {
+      try { await html5QrRef.current.stop(); await html5QrRef.current.clear(); } catch {}
+      html5QrRef.current = null;
+    }
+    setShowBarcodeScan(false);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.sku.trim() || !form.name.trim()) return;
@@ -108,6 +155,7 @@ export function ProductFormModal({
       sku: form.sku.trim().toUpperCase(),
       barcode: form.barcode?.trim() || null,
     });
+    stopBarcodeCamera();
   };
 
   const sortedCategories = [...categories].sort((a, b) => a.sort_order - b.sort_order);
@@ -243,17 +291,31 @@ export function ProductFormModal({
               <label className="block text-xs font-medium text-slate-600 mb-1">
                 Código de Barras
               </label>
-              <input
-                type="text"
-                value={form.barcode || ''}
-                onChange={(e) => update('barcode', e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
-                placeholder="Ej: 7800000000017"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-              />
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={form.barcode || ''}
+                  onChange={(e) => update('barcode', e.target.value)}
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                  placeholder="Ej: 7800000000017"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+                <button type="button" onClick={showBarcodeScan ? stopBarcodeCamera : startBarcodeCamera}
+                  className={`flex items-center justify-center w-10 rounded-lg transition-colors ${showBarcodeScan ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                  <ScanLine className="w-4 h-4" />
+                </button>
+              </div>
+              {showBarcodeScan && (
+                <div className="mt-2 relative rounded-lg overflow-hidden bg-slate-900 aspect-[4/3]">
+                  <div id="barcode-scan-view" className="w-full h-full" />
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[70%] h-[40%] border-2 border-red-500 rounded-lg" />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -406,27 +468,74 @@ export function ProductFormModal({
               </div>
             </div>
 
-            <div className="mt-3">
-              <label className="block text-xs font-medium text-slate-400 mb-1">
-                Peso (kg) <span className="text-red-400">*</span>
-              </label>
-              <div className="relative">
-                <Weight className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  <Weight className="w-3 h-3 inline mr-1" />Peso (kg)
+                </label>
                 <input
                   type="number"
                   value={form.weight_kg}
                   onChange={(e) => update('weight_kg', parseFloat(e.target.value) || 0)}
-                  min={0}
-                  step="0.01"
-                  required
-                  className="w-full pl-9 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  min={0} step="0.01"
+                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
                   placeholder="0.5"
                 />
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                Usado para cálculo automático de costo de envío en Mercado Libre
-              </p>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  <Ruler className="w-3 h-3 inline mr-1" />Alto (cm)
+                </label>
+                <input
+                  type="number"
+                  value={form.height_cm}
+                  onChange={(e) => update('height_cm', parseFloat(e.target.value) || 0)}
+                  min={0} step="0.1"
+                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="10"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  <Ruler className="w-3 h-3 inline mr-1" />Ancho (cm)
+                </label>
+                <input
+                  type="number"
+                  value={form.width_cm}
+                  onChange={(e) => update('width_cm', parseFloat(e.target.value) || 0)}
+                  min={0} step="0.1"
+                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="15"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  <Ruler className="w-3 h-3 inline mr-1" />Largo (cm)
+                </label>
+                <input
+                  type="number"
+                  value={form.length_cm}
+                  onChange={(e) => update('length_cm', parseFloat(e.target.value) || 0)}
+                  min={0} step="0.1"
+                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  placeholder="20"
+                />
+              </div>
             </div>
+
+            {/* ML Shipping Preview */}
+            {mlShippingPreview > 0 && (
+              <div className="mt-3 flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-2">
+                <Truck className="w-4 h-4 text-yellow-400" />
+                <div className="flex-1">
+                  <p className="text-[11px] text-slate-400">Costo envío ML (volumen + peso)</p>
+                  <p className="text-sm font-bold text-yellow-400">{formatCurrency(mlShippingPreview)}</p>
+                </div>
+                <p className="text-[10px] text-slate-500 text-right">
+                  (H×W×L / 5000) × $1.500<br/>+ peso × $2.000
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Actions */}
