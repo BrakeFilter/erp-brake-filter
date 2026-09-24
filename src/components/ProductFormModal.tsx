@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo } from 'react';
-import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight, ScanLine, Ruler, Truck } from 'lucide-react';
+import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight, ScanLine, Ruler, Truck, Camera } from 'lucide-react';
 import type { Category } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
@@ -54,6 +54,9 @@ const emptyForm: ProductFormData = {
   image_url: null,
 };
 
+// Show empty string instead of 0 for numeric inputs
+const numDisplay = (val: number) => (val === 0 ? '' : String(val));
+
 export function ProductFormModal({
   open,
   initialData,
@@ -65,9 +68,10 @@ export function ProductFormModal({
     initialData ? { ...emptyForm, ...initialData } : emptyForm,
   );
   const [uploading, setUploading] = useState(false);
-  const [imageMode, setImageMode] = useState<'upload' | 'url'>('upload');
+  const [imageMode, setImageMode] = useState<'upload' | 'camera' | 'url'>('upload');
   const [showBarcodeScan, setShowBarcodeScan] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const html5QrRef = useRef<Html5Qrcode | null>(null);
 
   const mlShippingPreview = useMemo(() => {
@@ -160,6 +164,9 @@ export function ProductFormModal({
 
   const sortedCategories = [...categories].sort((a, b) => a.sort_order - b.sort_order);
 
+  const numInputClass = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400";
+  const numInputClassDark = "w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500";
+
   return (
     <div
       className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
@@ -207,6 +214,15 @@ export function ProductFormModal({
                   </button>
                   <button
                     type="button"
+                    onClick={() => setImageMode('camera')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                      imageMode === 'camera' ? 'bg-slate-900 text-white' : 'text-slate-500'
+                    }`}
+                  >
+                    <Camera className="w-3 h-3" /> Cámara
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setImageMode('url')}
                     className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all ${
                       imageMode === 'url' ? 'bg-slate-900 text-white' : 'text-slate-500'
@@ -216,7 +232,7 @@ export function ProductFormModal({
                   </button>
                 </div>
 
-                {imageMode === 'upload' ? (
+                {imageMode === 'upload' && (
                   <div>
                     <input
                       ref={fileInputRef}
@@ -238,17 +254,39 @@ export function ProductFormModal({
                       <ImageIcon className="w-3.5 h-3.5" />
                       {uploading ? 'Subiendo...' : 'Seleccionar imagen'}
                     </button>
-                    {form.image_url && (
-                      <button
-                        type="button"
-                        onClick={() => update('image_url', null)}
-                        className="ml-2 text-xs text-red-500 hover:text-red-600"
-                      >
-                        Quitar imagen
-                      </button>
-                    )}
                   </div>
-                ) : (
+                )}
+
+                {imageMode === 'camera' && (
+                  <div>
+                    <input
+                      ref={cameraInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleImageUpload(file);
+                        if (cameraInputRef.current) cameraInputRef.current.value = '';
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => cameraInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-600 hover:bg-slate-50 transition-all disabled:opacity-50"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      {uploading ? 'Subiendo...' : 'Tomar foto'}
+                    </button>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Abre la cámara de tu celular o webcam para capturar la foto directamente.
+                    </p>
+                  </div>
+                )}
+
+                {imageMode === 'url' && (
                   <input
                     type="url"
                     value={form.image_url || ''}
@@ -261,8 +299,18 @@ export function ProductFormModal({
                     spellCheck={false}
                   />
                 )}
+
+                {form.image_url && (
+                  <button
+                    type="button"
+                    onClick={() => update('image_url', null)}
+                    className="text-xs text-red-500 hover:text-red-600"
+                  >
+                    Quitar imagen
+                  </button>
+                )}
                 <p className="text-[11px] text-slate-400">
-                  Sube una foto o pega una URL. Si no se asigna, se usa imagen por defecto.
+                  Sube una foto, toma una con la cámara o pega una URL.
                 </p>
               </div>
             </div>
@@ -411,20 +459,22 @@ export function ProductFormModal({
               <label className="block text-xs font-medium text-slate-600 mb-1">Stock Actual</label>
               <input
                 type="number"
-                value={form.stock_current}
+                value={numDisplay(form.stock_current)}
                 onChange={(e) => update('stock_current', parseInt(e.target.value) || 0)}
                 min={0}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                className={numInputClass}
+                placeholder="0"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Stock Mínimo</label>
               <input
                 type="number"
-                value={form.stock_min}
+                value={numDisplay(form.stock_min)}
                 onChange={(e) => update('stock_min', parseInt(e.target.value) || 0)}
                 min={0}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                className={numInputClass}
+                placeholder="0"
               />
             </div>
           </div>
@@ -443,12 +493,12 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.price_total}
+                  value={numDisplay(form.price_total)}
                   onChange={(e) => update('price_total', parseFloat(e.target.value) || 0)}
                   min={0}
                   step="any"
                   required
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="0"
                 />
               </div>
@@ -458,11 +508,11 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.price_sale}
+                  value={numDisplay(form.price_sale)}
                   onChange={(e) => update('price_sale', parseFloat(e.target.value) || 0)}
                   min={0}
                   step="any"
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="0"
                 />
               </div>
@@ -475,10 +525,10 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.weight_kg}
+                  value={numDisplay(form.weight_kg)}
                   onChange={(e) => update('weight_kg', parseFloat(e.target.value) || 0)}
                   min={0} step="0.01"
-                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="0.5"
                 />
               </div>
@@ -488,10 +538,10 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.height_cm}
+                  value={numDisplay(form.height_cm)}
                   onChange={(e) => update('height_cm', parseFloat(e.target.value) || 0)}
                   min={0} step="0.1"
-                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="10"
                 />
               </div>
@@ -501,10 +551,10 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.width_cm}
+                  value={numDisplay(form.width_cm)}
                   onChange={(e) => update('width_cm', parseFloat(e.target.value) || 0)}
                   min={0} step="0.1"
-                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="15"
                 />
               </div>
@@ -514,10 +564,10 @@ export function ProductFormModal({
                 </label>
                 <input
                   type="number"
-                  value={form.length_cm}
+                  value={numDisplay(form.length_cm)}
                   onChange={(e) => update('length_cm', parseFloat(e.target.value) || 0)}
                   min={0} step="0.1"
-                  className="w-full px-2 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500"
+                  className={numInputClassDark}
                   placeholder="20"
                 />
               </div>

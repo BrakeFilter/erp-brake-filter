@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Camera, Usb, ScanLine, Flashlight, FlashlightOff, AlertCircle, CheckCircle2, ShoppingCart, PlusCircle, Trash2 } from 'lucide-react';
+import { X, Camera, Usb, ScanLine, Flashlight, FlashlightOff, AlertCircle, CheckCircle2, ShoppingCart, PlusCircle, Trash2, Minus } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import type { Product } from '@/types';
 import { formatCurrency } from '@/lib/utils';
@@ -8,8 +8,8 @@ type ScanMode = 'camera' | 'hardware';
 
 interface ScannedItem {
   code: string;
-  product?: Product;
-  isNew: boolean;
+  product: Product;
+  qty: number;
 }
 
 interface ScanModalProps {
@@ -17,8 +17,8 @@ interface ScanModalProps {
   onClose: () => void;
   products: Product[];
   onNewCode: (code: string) => void;
-  onPurchase: (items: Product[]) => void;
-  onSell: (items: Product[]) => void;
+  onPurchase: (items: Map<string, { product: Product; qty: number }>) => void;
+  onSell: (items: Map<string, { product: Product; qty: number }>) => void;
 }
 
 const STORAGE_KEY = 'bf_scanner_mode';
@@ -40,6 +40,7 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
   const [torchSupported, setTorchSupported] = useState(false);
   const [hardwareInput, setHardwareInput] = useState('');
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([]);
+  const [lastScanned, setLastScanned] = useState<string | null>(null);
   const html5QrRef = useRef<Html5Qrcode | null>(null);
   const hardwareInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -68,13 +69,19 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
     );
 
     if (found) {
+      // If already in list, increment quantity +1
       setScannedItems((prev) => {
         const existing = prev.find((i) => i.code === code);
-        if (existing) return prev;
-        return [...prev, { code, product: found, isNew: false }];
+        if (existing) {
+          return prev.map((i) =>
+            i.code === code ? { ...i, qty: i.qty + 1 } : i,
+          );
+        }
+        return [...prev, { code, product: found, qty: 1 }];
       });
+      setLastScanned(code);
+      setTimeout(() => setLastScanned(null), 1500);
     } else {
-      // New code — open product form immediately
       onNewCode(code);
     }
   }, [products, onNewCode]);
@@ -139,15 +146,39 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
 
   useEffect(() => { return () => { stopCamera(); }; }, [stopCamera]);
 
-  // Reset scanned items when modal closes
   useEffect(() => {
     if (!open) setScannedItems([]);
   }, [open]);
 
   if (!open) return null;
 
-  const existingItems = scannedItems.filter((i) => !i.isNew);
-  const existingProducts = existingItems.map((i) => i.product!).filter(Boolean);
+  const buildMap = (): Map<string, { product: Product; qty: number }> => {
+    const m = new Map<string, { product: Product; qty: number }>();
+    scannedItems.forEach((i) => m.set(i.code, { product: i.product, qty: i.qty }));
+    return m;
+  };
+
+  const handlePurchase = () => {
+    const items = buildMap();
+    onPurchase(items);
+    setScannedItems([]);
+  };
+
+  const handleSell = () => {
+    const items = buildMap();
+    onSell(items);
+    setScannedItems([]);
+  };
+
+  const adjustQty = (code: string, delta: number) => {
+    setScannedItems((prev) =>
+      prev
+        .map((i) =>
+          i.code === code ? { ...i, qty: Math.max(1, i.qty + delta) } : i,
+        )
+        .filter((i) => i.qty > 0),
+    );
+  };
 
   return (
     <div
@@ -245,11 +276,11 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
           )}
 
           {/* Scanned items list */}
-          {existingItems.length > 0 && (
+          {scannedItems.length > 0 && (
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-slate-600">
-                  {existingItems.length} producto{existingItems.length !== 1 ? 's' : ''} escaneado{existingItems.length !== 1 ? 's' : ''}
+                  {scannedItems.length} producto{scannedItems.length !== 1 ? 's' : ''} · {scannedItems.reduce((s, i) => s + i.qty, 0)} un.
                 </p>
                 <button onClick={() => setScannedItems([])}
                   className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1">
@@ -257,15 +288,27 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
                 </button>
               </div>
               <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                {existingItems.map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg p-2.5">
+                {scannedItems.map((item) => (
+                  <div key={item.code} className={`flex items-center gap-2 rounded-lg p-2.5 border transition-all ${lastScanned === item.code ? 'bg-green-100 border-green-300 scale-[1.02]' : 'bg-green-50 border-green-200'}`}>
                     <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-green-800 truncate">{item.product?.name}</p>
-                      <p className="text-[10px] text-green-600">{item.product?.sku} · {formatCurrency(item.product?.price_total || 0)}</p>
+                      <p className="text-xs font-medium text-green-800 truncate">{item.product.name}</p>
+                      <p className="text-[10px] text-green-600">{item.product.sku} · {formatCurrency(item.product.price_total)}</p>
                     </div>
-                    <button onClick={() => setScannedItems(scannedItems.filter((_, i) => i !== idx))}
-                      className="text-slate-400 hover:text-red-600 p-1">
+                    {/* Quantity controls */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button onClick={() => adjustQty(item.code, -1)}
+                        className="w-6 h-6 rounded bg-white border border-green-300 text-green-700 flex items-center justify-center hover:bg-green-50">
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-sm font-bold text-green-800 w-6 text-center">{item.qty}</span>
+                      <button onClick={() => adjustQty(item.code, 1)}
+                        className="w-6 h-6 rounded bg-white border border-green-300 text-green-700 flex items-center justify-center hover:bg-green-50">
+                        <PlusCircle className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <button onClick={() => setScannedItems(scannedItems.filter((i) => i.code !== item.code))}
+                      className="text-slate-400 hover:text-red-600 p-1 flex-shrink-0">
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -274,11 +317,11 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
 
               {/* Action buttons */}
               <div className="grid grid-cols-2 gap-2 pt-2">
-                <button onClick={() => { onPurchase(existingProducts); setScannedItems([]); }}
+                <button onClick={handlePurchase}
                   className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors">
                   <PlusCircle className="w-4 h-4" /> Es Compra
                 </button>
-                <button onClick={() => { onSell(existingProducts); setScannedItems([]); }}
+                <button onClick={handleSell}
                   className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors">
                   <ShoppingCart className="w-4 h-4" /> Es Venta
                 </button>

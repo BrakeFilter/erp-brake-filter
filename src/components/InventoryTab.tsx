@@ -100,20 +100,44 @@ export function InventoryTab({
     };
 
     if (data.id) {
+      // When editing, check if barcode is used by ANOTHER product
+      if (data.barcode && data.barcode.trim()) {
+        const { data: existing } = await supabase
+          .from('products')
+          .select('id')
+          .eq('barcode', data.barcode.trim())
+          .neq('id', data.id)
+          .maybeSingle();
+        if (existing) {
+          showToast('Código de barras ya existe en otro producto', 'error');
+          return;
+        }
+      }
       const { error } = await supabase
         .from('products')
         .update({ ...payload, updated_at: new Date().toISOString() })
         .eq('id', data.id);
       if (error) {
-        if (error.code === '23505') { showToast('Código de barras ya existe en otro producto', 'error'); }
-        else { showToast(`Error: ${error.message}`, 'error'); }
+        showToast(`Error: ${error.message}`, 'error');
         return;
       }
       showToast('Producto actualizado', 'success');
     } else {
+      // When creating, check if barcode already exists
+      if (data.barcode && data.barcode.trim()) {
+        const { data: existing } = await supabase
+          .from('products')
+          .select('id')
+          .eq('barcode', data.barcode.trim())
+          .maybeSingle();
+        if (existing) {
+          showToast('Código de barras ya existe en otro producto', 'error');
+          return;
+        }
+      }
       const { error } = await supabase.from('products').insert(payload);
       if (error) {
-        if (error.code === '23505') { showToast('SKU o código de barras ya existe', 'error'); }
+        if (error.code === '23505') { showToast('SKU ya existe. Use uno diferente.', 'error'); }
         else { showToast(`Error: ${error.message}`, 'error'); }
         return;
       }
@@ -153,33 +177,38 @@ export function InventoryTab({
     setShowForm(true);
   }, []);
 
-  const handlePurchaseScanned = useCallback(async (items: Product[]) => {
+  const handlePurchaseScanned = useCallback(async (items: Map<string, { product: Product; qty: number }>) => {
     setShowScan(false);
-    for (const product of items) {
+    let totalAdded = 0;
+    for (const [, { product, qty }] of items) {
       const { error } = await supabase.rpc('process_movement', {
         p_product_id: product.id,
         p_movement_type: 'entrada',
-        p_quantity: 1,
+        p_quantity: qty,
         p_user_name: 'Operador',
         p_notes: 'Compra por escaneo',
       });
       if (error) { showToast(`Error al sumar stock de ${product.sku}: ${error.message}`, 'error'); }
+      else { totalAdded += qty; }
     }
-    showToast(`${items.length} productos sumados al stock`, 'success');
+    showToast(`${totalAdded} unidades sumadas al stock`, 'success');
     onProductsChange();
   }, [onProductsChange]);
 
-  const handleSellScanned = useCallback((items: Product[]) => {
+  const handleSellScanned = useCallback((items: Map<string, { product: Product; qty: number }>) => {
     setShowScan(false);
-    const orderItems: PurchaseOrderItem[] = items.map((p) => ({
-      sku: p.sku,
-      name: p.name,
-      barcode: p.barcode,
-      quantity: 1,
-      unit_cost: p.price_total,
-    }));
+    const orderItems: PurchaseOrderItem[] = [];
+    for (const [, { product, qty }] of items) {
+      orderItems.push({
+        sku: product.sku,
+        name: product.name,
+        barcode: product.barcode,
+        quantity: qty,
+        unit_cost: product.price_total,
+      });
+    }
     onSellScanned(orderItems);
-    showToast(`${items.length} productos enviados a Órdenes de Compra`, 'info');
+    showToast(`${orderItems.length} productos enviados a Órdenes de Compra`, 'info');
   }, [onSellScanned]);
 
   const handleImport = async (file: File) => {
