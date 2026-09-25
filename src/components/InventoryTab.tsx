@@ -92,7 +92,7 @@ export function InventoryTab({
       tax_rate: tenantConfig.taxRate,
       price_total: data.price_total,
       price_sale: data.price_sale,
-      weight_kg: data.weight_kg,
+      weight_kg: data.weight_g,
       height_cm: data.height_cm,
       width_cm: data.width_cm,
       length_cm: data.length_cm,
@@ -100,16 +100,31 @@ export function InventoryTab({
     };
 
     if (data.id) {
-      // When editing, check if barcode is used by ANOTHER product
+      // When editing, check if barcode is used by ANOTHER product (excluding deleted)
       if (data.barcode && data.barcode.trim()) {
         const { data: existing } = await supabase
           .from('products')
           .select('id')
           .eq('barcode', data.barcode.trim())
+          .is('deleted_at', null)
           .neq('id', data.id)
           .maybeSingle();
         if (existing) {
           showToast('Código de barras ya existe en otro producto', 'error');
+          return;
+        }
+      }
+      // Check SKU uniqueness too
+      if (data.sku.trim()) {
+        const { data: existingSku } = await supabase
+          .from('products')
+          .select('id')
+          .eq('sku', data.sku.trim())
+          .is('deleted_at', null)
+          .neq('id', data.id)
+          .maybeSingle();
+        if (existingSku) {
+          showToast('SKU ya existe en otro producto', 'error');
           return;
         }
       }
@@ -123,15 +138,29 @@ export function InventoryTab({
       }
       showToast('Producto actualizado', 'success');
     } else {
-      // When creating, check if barcode already exists
+      // When creating, check if barcode already exists (excluding deleted)
       if (data.barcode && data.barcode.trim()) {
         const { data: existing } = await supabase
           .from('products')
           .select('id')
           .eq('barcode', data.barcode.trim())
+          .is('deleted_at', null)
           .maybeSingle();
         if (existing) {
           showToast('Código de barras ya existe en otro producto', 'error');
+          return;
+        }
+      }
+      // Check SKU uniqueness
+      if (data.sku.trim()) {
+        const { data: existingSku } = await supabase
+          .from('products')
+          .select('id')
+          .eq('sku', data.sku.trim())
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (existingSku) {
+          showToast('SKU ya existe. Use uno diferente.', 'error');
           return;
         }
       }
@@ -152,6 +181,7 @@ export function InventoryTab({
 
   const handleDelete = async (product: Product) => {
     if (!confirm(`¿Eliminar "${product.name}" (${product.sku})?`)) return;
+    // Hard delete: completely remove from table so barcode/SKU can be reused
     const { error } = await supabase.from('products').delete().eq('id', product.id);
     if (error) { showToast('Error al eliminar producto', 'error'); }
     else { showToast('Producto eliminado', 'success'); onProductsChange(); }
@@ -332,7 +362,7 @@ export function InventoryTab({
                 brand: editProduct.brand, category_id: editProduct.category_id,
                 location: editProduct.location, stock_current: editProduct.stock_current,
                 stock_min: editProduct.stock_min, price_total: editProduct.price_total,
-                price_sale: editProduct.price_sale, weight_kg: editProduct.weight_kg,
+                price_sale: editProduct.price_sale, weight_kg: editProduct.weight_g,
                 height_cm: editProduct.height_cm || 0,
                 width_cm: editProduct.width_cm || 0,
                 length_cm: editProduct.length_cm || 0,

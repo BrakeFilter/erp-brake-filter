@@ -44,13 +44,21 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
   const html5QrRef = useRef<Html5Qrcode | null>(null);
   const hardwareInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const lastScanTimeRef = useRef<number>(0);
+  const CAMERA_COOLDOWN_MS = 1000;
 
   const persistMode = (m: ScanMode) => {
     setMode(m);
     try { localStorage.setItem(STORAGE_KEY, m); } catch { /* ignore */ }
   };
 
-  const processCode = useCallback((code: string) => {
+  const processCode = useCallback((code: string, isCamera = false) => {
+    // Cooldown ONLY for camera mode to prevent duplicate scans
+    if (isCamera) {
+      const now = Date.now();
+      if (now - lastScanTimeRef.current < CAMERA_COOLDOWN_MS) return;
+      lastScanTimeRef.current = now;
+    }
     // Beep + vibrate
     try {
       const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -96,7 +104,7 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
       await html5Qr.start(
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 250, height: 180 } },
-        (decoded: string) => { processCode(decoded); },
+        (decoded: string) => { processCode(decoded, true); },
         () => {},
       );
       setCameraActive(true);
@@ -134,7 +142,7 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
   const handleHardwareSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const code = hardwareInput.trim();
-    if (code.length >= 1) { processCode(code); setHardwareInput(''); }
+    if (code.length >= 1) { processCode(code, false); setHardwareInput(''); }
   };
 
   useEffect(() => {

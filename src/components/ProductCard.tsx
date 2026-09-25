@@ -100,10 +100,10 @@ export function ProductCard({ product, onStockChange, onEdit, onDelete, onSell }
             <span>{product.categories.name}</span>
           </div>
         )}
-        {product.weight_kg > 0 && (
+        {product.weight_g > 0 && (
           <div className="flex items-center gap-1.5">
             <Weight className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-            <span>{product.weight_kg} kg</span>
+            <span>{product.weight_g} g</span>
           </div>
         )}
       </div>

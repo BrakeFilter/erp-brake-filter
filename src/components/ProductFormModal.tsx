@@ -1,5 +1,5 @@
-import { useState, useRef, useMemo } from 'react';
-import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight, ScanLine, Ruler, Truck, Camera } from 'lucide-react';
+import { useState, useRef, useMemo, useEffect } from 'react';
+import { X, Package, Upload, Link2, ImageIcon, DollarSign, Weight, ScanLine, Ruler, Truck, Camera, AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { Category } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
@@ -70,9 +70,60 @@ export function ProductFormModal({
   const [uploading, setUploading] = useState(false);
   const [imageMode, setImageMode] = useState<'upload' | 'camera' | 'url'>('upload');
   const [showBarcodeScan, setShowBarcodeScan] = useState(false);
+  const [skuStatus, setSkuStatus] = useState<'idle' | 'checking' | 'taken' | 'ok'>('idle');
+  const [barcodeStatus, setBarcodeStatus] = useState<'idle' | 'checking' | 'taken' | 'ok'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const html5QrRef = useRef<Html5Qrcode | null>(null);
+
+  useEffect(() => {
+    const sku = form.sku.trim();
+    if (!sku) { setSkuStatus('idle'); return; }
+    setSkuStatus('checking');
+    const timer = setTimeout(async () => {
+      let query = supabase.from('products').select('id').eq('sku', sku).is('deleted_at', null);
+      if (form.id) query = query.neq('id', form.id);
+      const { data } = await query.maybeSingle();
+      setSkuStatus(data ? 'taken' : 'ok');
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [form.sku, form.id]);
+
+  useEffect(() => {
+    const barcode = form.barcode?.trim();
+    if (!barcode) { setBarcodeStatus('idle'); return; }
+    setBarcodeStatus('checking');
+    const timer = setTimeout(async () => {
+      let query = supabase.from('products').select('id').eq('barcode', barcode).is('deleted_at', null);
+      if (form.id) query = query.neq('id', form.id);
+      const { data } = await query.maybeSingle();
+      setBarcodeStatus(data ? 'taken' : 'ok');
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [form.barcode, form.id]);
+
+  const autoGenSku = async (): Promise<string> => {
+    const cat = categories.find((c) => c.id === form.category_id);
+    let prefix = 'GEN';
+    if (cat) {
+      const words = cat.name.toUpperCase().split(' ');
+      const significantWord = words.find((w) => !['DE', 'EL', 'LA', 'LOS', 'LAS', 'Y'].includes(w)) || words[0];
+      prefix = significantWord.slice(0, 3);
+    }
+    const { data } = await supabase
+      .from('products')
+      .select('sku')
+      .ilike('sku', `${prefix}-%`)
+      .is('deleted_at', null);
+    let maxNum = 0;
+    if (data) {
+      for (const row of data) {
+        const match = row.sku.match(/-(\d+)$/);
+        if (match) maxNum = Math.max(maxNum, parseInt(match[1]));
+      }
+    }
+    return `${prefix}-${String(maxNum + 1).padStart(4, '0')}`;
+  };
 
   const mlShippingPreview = useMemo(() => {
     const h = form.height_cm || 0;
@@ -151,12 +202,16 @@ export function ProductFormModal({
     setShowBarcodeScan(false);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.sku.trim() || !form.name.trim()) return;
+    let finalSku = form.sku.trim().toUpperCase();
+    if (!finalSku) {
+      finalSku = await autoGenSku();
+    }
+    if (!finalSku || !form.name.trim()) return;
     onSave({
       ...form,
-      sku: form.sku.trim().toUpperCase(),
+      sku: finalSku,
       barcode: form.barcode?.trim() || null,
     });
     stopBarcodeCamera();
@@ -320,37 +375,62 @@ export function ProductFormModal({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
-                SKU / Código Interno <span className="text-red-500">*</span>
+                SKU / Código Interno
+                {!initialData?.id && (
+                  <span className="text-slate-400 font-normal"> (vacío = auto-generado)</span>
+                )}
               </label>
-              <input
-                type="text"
-                value={form.sku}
-                onChange={(e) => update('sku', e.target.value)}
-                required
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
-                placeholder="Ej: BF-AIRE-001"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  value={form.sku}
+                  onChange={(e) => update('sku', e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 ${
+                    skuStatus === 'taken' ? 'border-red-400 bg-red-50' : skuStatus === 'ok' ? 'border-green-400 bg-green-50' : 'border-slate-200'
+                  }`}
+                  placeholder="Auto: POL-0001"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                />
+                {skuStatus === 'taken' && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500"><AlertCircle className="w-4 h-4" /></span>
+                )}
+                {skuStatus === 'ok' && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-green-500"><CheckCircle2 className="w-4 h-4" /></span>
+                )}
+              </div>
+              {skuStatus === 'taken' && (
+                <p className="text-[11px] text-red-500 mt-1">SKU ya existe en otro producto</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
                 Código de Barras
               </label>
               <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={form.barcode || ''}
-                  onChange={(e) => update('barcode', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
-                  placeholder="Ej: 7800000000017"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                />
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={form.barcode || ''}
+                    onChange={(e) => update('barcode', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 ${
+                      barcodeStatus === 'taken' ? 'border-red-400 bg-red-50' : barcodeStatus === 'ok' ? 'border-green-400 bg-green-50' : 'border-slate-200'
+                    }`
+                    placeholder="Ej: 7800000000017"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                  />
+                  {barcodeStatus === 'taken' && (
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500"><AlertCircle className="w-4 h-4" /></span>
+                  )}
+                  {barcodeStatus === 'ok' && (
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-green-500"><CheckCircle2 className="w-4 h-4" /></span>
+                  )}
+                </div>
                 <button type="button" onClick={showBarcodeScan ? stopBarcodeCamera : startBarcodeCamera}
                   className={`flex items-center justify-center w-10 rounded-lg transition-colors ${showBarcodeScan ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                   <ScanLine className="w-4 h-4" />

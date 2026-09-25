@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   ClipboardList, Send, CheckCircle2, X, Package, Pencil, FileText,
-  Share2, Trash2, Save, MessageCircle, Mail,
+  Share2, Trash2, Save, MessageCircle, Mail, Plus, Minus,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
@@ -129,6 +129,16 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
     );
   };
 
+  const adjustEditQty = (idx: number, delta: number) => {
+    setEditItems((prev) =>
+      prev.map((item, i) =>
+        i === idx ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item,
+      ),
+    );
+  };
+
+  const editTotal = editItems.reduce((sum, i) => sum + i.unit_cost * i.quantity, 0);
+
   const removeEditItem = (idx: number) => {
     setEditItems((prev) => prev.filter((_, i) => i !== idx));
   };
@@ -161,44 +171,64 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
     setSavingEdit(false);
   };
 
-  const generatePDFText = (order: PurchaseOrder): string => {
+  const generateOrderHTML = (order: PurchaseOrder): string => {
     const supplierName = getSupplierName(order.supplier_id);
-    const lines: string[] = [
-      '===========================================',
-      '         ORDEN DE COMPRA',
-      '===========================================',
-      '',
-      `Proveedor: ${supplierName}`,
-      `Fecha:     ${formatDate(order.created_at)}`,
-      `Estado:    ${order.status.toUpperCase()}`,
-      '',
-      '-------------------------------------------',
-      'SKU         PRODUCTO              CANT  COSTO',
-      '-------------------------------------------',
-    ];
-    order.items.forEach((item) => {
-      const sku = item.sku.padEnd(12).slice(0, 12);
-      const name = (item.name || '').padEnd(20).slice(0, 20);
-      const qty = String(item.quantity).padStart(4);
-      const cost = formatCurrency(item.unit_cost).padStart(10);
-      lines.push(`${sku} ${name} ${qty} ${cost}`);
-    });
-    lines.push('-------------------------------------------');
-    lines.push(`TOTAL: ${formatCurrency(order.total_cost)}`);
-    lines.push('');
-    lines.push('===========================================');
-    lines.push('  BRAKE FILTER - Control de Bodega & ERP');
-    lines.push('===========================================');
-    return lines.join('\n');
+    const now = new Date(order.created_at);
+    const dateStr = now.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+    const orderId = order.id.slice(0, 8).toUpperCase();
+
+    const rows = order.items.map((item) => `
+      <tr>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:13px;font-weight:600;">${item.sku}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px;">${item.name || ''}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px;font-weight:600;">${item.quantity} ${item.quantity === 1 ? 'unidad' : 'unidades'}</td>
+      </tr>`).join('');
+
+    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><style>
+      *{margin:0;padding:0;box-sizing:border-box;}
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8fafc;padding:20px;}
+      .doc{max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);}
+      .header{background:#dc2626;color:#fff;padding:24px 28px;display:flex;align-items:center;gap:14px;}
+      .logo{width:44px;height:44px;border-radius:10px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;color:#dc2626;flex-shrink:0;}
+      .header h1{font-size:20px;font-weight:800;letter-spacing:-0.5px;}
+      .header p{font-size:11px;opacity:0.85;text-transform:uppercase;letter-spacing:1px;}
+      .meta{padding:20px 28px;border-bottom:1px solid #e2e8f0;}
+      .meta-row{display:flex;justify-content:space-between;margin-bottom:8px;}
+      .meta-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;}
+      .meta-value{font-size:14px;color:#0f172a;font-weight:600;}
+      table{width:100%;border-collapse:collapse;}
+      th{background:#f1f5f9;padding:10px 12px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;}
+      .footer{padding:16px 28px;text-align:center;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0;}
+    </style></head><body>
+      <div class="doc">
+        <div class="header">
+          <div class="logo">BF</div>
+          <div>
+            <h1>ORDEN DE COMPRA #${orderId}</h1>
+            <p>BrakeFilter ERP</p>
+          </div>
+        </div>
+        <div class="meta">
+          <div class="meta-row"><span class="meta-label">Proveedor</span><span class="meta-value">${supplierName}</span></div>
+          <div class="meta-row"><span class="meta-label">Fecha</span><span class="meta-value">${dateStr} ${timeStr}</span></div>
+        </div>
+        <table>
+          <thead><tr><th>Código</th><th>Producto</th><th style="text-align:center;">Cantidad</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="footer">Generado por BrakeFilter ERP · ${dateStr} ${timeStr}</div>
+      </div>
+    </body></html>`;
   };
 
   const handleDownloadPDF = (order: PurchaseOrder) => {
-    const text = generatePDFText(order);
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const html = generateOrderHTML(order);
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `orden-compra-${order.id.slice(0, 8)}.txt`;
+    a.download = `orden-compra-${order.id.slice(0, 8)}.html`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -208,14 +238,18 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
 
   const handleShare = async (order: PurchaseOrder) => {
     const supplierName = getSupplierName(order.supplier_id);
-    let message = `*ORDEN DE COMPRA - BRAKE FILTER*\n\n`;
+    const now = new Date(order.created_at);
+    const dateStr = now.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+    const orderId = order.id.slice(0, 8).toUpperCase();
+    let message = `*ORDEN DE COMPRA #${orderId} - BRAKE FILTER*\n\n`;
     message += `Proveedor: ${supplierName}\n`;
-    message += `Fecha: ${formatDate(order.created_at)}\n\n`;
+    message += `Fecha: ${dateStr} ${timeStr}\n\n`;
     message += `*Productos:*\n`;
     order.items.forEach((item) => {
-      message += `• ${item.sku} - ${item.name}\n  ${item.quantity}x ${formatCurrency(item.unit_cost)}\n`;
+      message += `• ${item.sku} - ${item.name}\n  ${item.quantity} ${item.quantity === 1 ? 'unidad' : 'unidades'}\n`;
     });
-    message += `\n*TOTAL: ${formatCurrency(order.total_cost)}*\n`;
+    message += `\n_Generado por BrakeFilter ERP_`;
 
     // Try native share first
     if (navigator.share) {
@@ -246,12 +280,16 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
 
   const handleShareEmail = (order: PurchaseOrder) => {
     const supplierName = getSupplierName(order.supplier_id);
-    const subject = `Orden de Compra - BRAKE FILTER - ${supplierName}`;
-    let body = `Estimado ${supplierName},\n\nAdjunto nuestra orden de compra:\n\n`;
+    const now = new Date(order.created_at);
+    const dateStr = now.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+    const orderId = order.id.slice(0, 8).toUpperCase();
+    const subject = `Orden de Compra #${orderId} - BRAKE FILTER - ${supplierName}`;
+    let body = `Estimado ${supplierName},\n\nAdjunto nuestra orden de compra #${orderId}:\n\n`;
     order.items.forEach((item) => {
-      body += `• ${item.sku} - ${item.name}: ${item.quantity}x ${formatCurrency(item.unit_cost)}\n`;
+      body += `• ${item.sku} - ${item.name}: ${item.quantity} ${item.quantity === 1 ? 'unidad' : 'unidades'}\n`;
     });
-    body += `\nTOTAL: ${formatCurrency(order.total_cost)}\n\nSaludos,\nBRAKE FILTER`;
+    body += `\nFecha: ${dateStr} ${timeStr}\n\nSaludos,\nBRAKE FILTER`;
     const supplier = suppliers.find(s => s.id === order.supplier_id);
     const email = supplier?.email || '';
     const mailto = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
@@ -449,22 +487,40 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium text-slate-700 truncate">{item.sku} — {item.name}</p>
                       </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => adjustEditQty(idx, -1)}
+                          className="w-7 h-7 rounded bg-slate-100 text-slate-600 flex items-center justify-center hover:bg-slate-200"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                        <input
+                          type="number"
+                          value={item.quantity === 0 ? '' : item.quantity}
+                          onChange={(e) => updateEditItem(idx, 'quantity', parseInt(e.target.value) || 0)}
+                          min={1}
+                          className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                          title="Cantidad"
+                          placeholder="0"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => adjustEditQty(idx, 1)}
+                          className="w-7 h-7 rounded bg-slate-100 text-slate-600 flex items-center justify-center hover:bg-slate-200"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      </div>
                       <input
                         type="number"
-                        value={item.quantity}
-                        onChange={(e) => updateEditItem(idx, 'quantity', parseInt(e.target.value) || 1)}
-                        min={1}
-                        className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-red-500/30"
-                        title="Cantidad"
-                      />
-                      <input
-                        type="number"
-                        value={item.unit_cost}
+                        value={item.unit_cost === 0 ? '' : item.unit_cost}
                         onChange={(e) => updateEditItem(idx, 'unit_cost', parseFloat(e.target.value) || 0)}
                         min={0}
                         step="any"
                         className="w-24 px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-red-500/30"
                         title="Costo unitario"
+                        placeholder="0"
                       />
                       <button
                         onClick={() => removeEditItem(idx)}
@@ -476,7 +532,7 @@ export function PurchaseOrders({ orders, suppliers, onRefresh }: PurchaseOrdersP
                   ))}
                 </div>
                 <p className="text-xs text-slate-500 mt-2">
-                  Total: {formatCurrency(editItems.reduce((sum, i) => sum + i.unit_cost * i.quantity, 0))}
+                  Total: {formatCurrency(editTotal)}
                 </p>
               </div>
 

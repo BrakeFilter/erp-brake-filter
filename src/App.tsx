@@ -142,6 +142,7 @@ function AppInner() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicle_compatibilities' }, () => fetchCompatibilities())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'suppliers' }, () => fetchSuppliers())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, () => fetchPurchaseOrders())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, () => fetchMovements())
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };

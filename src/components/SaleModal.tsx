@@ -100,6 +100,19 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
           net_margin: totalWithCommission - (purchasePrice * quantity) - finalShippingCost - totalCommission - commissionAmount,
         })
         .eq('id', movementData.id);
+
+      // Insert sale_items for metrics tracking
+      await supabase.from('sale_items').insert({
+        movement_id: movementData.id,
+        product_id: product.id,
+        sku: product.sku,
+        name: product.name,
+        quantity: quantity,
+        sale_price: totalWithCommission,
+        unit_cost: purchasePrice,
+        net_margin: totalWithCommission - (purchasePrice * quantity) - finalShippingCost - totalCommission - commissionAmount,
+        sale_channel: channel,
+      });
     }
 
     showToast(
