@@ -20,7 +20,7 @@ export interface ProductFormData {
   stock_min: number;
   price_total: number;
   price_sale: number;
-  weight_kg: number;
+  weight_g: number;
   height_cm: number;
   width_cm: number;
   length_cm: number;
@@ -47,7 +47,7 @@ const emptyForm: ProductFormData = {
   stock_min: 0,
   price_total: 0,
   price_sale: 0,
-  weight_kg: 0,
+  weight_g: 0,
   height_cm: 0,
   width_cm: 0,
   length_cm: 0,
@@ -78,10 +78,10 @@ export function ProductFormModal({
     const h = form.height_cm || 0;
     const w = form.width_cm || 0;
     const l = form.length_cm || 0;
-    const kg = form.weight_kg || 0;
-    if (h === 0 && w === 0 && l === 0 && kg === 0) return 0;
-    return Math.round((h * w * l / 5000) * 1500 + kg * 2000);
-  }, [form.height_cm, form.width_cm, form.length_cm, form.weight_kg]);
+    const g = form.weight_g || 0;
+    if (h === 0 && w === 0 && l === 0 && g === 0) return 0;
+    return Math.round((h * w * l / 5000) * 1500 + (g / 1000) * 2000);
+  }, [form.height_cm, form.width_cm, form.length_cm, form.weight_g]);
 
   if (!open) return null;
 
@@ -521,15 +521,15 @@ export function ProductFormModal({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  <Weight className="w-3 h-3 inline mr-1" />Peso (kg)
+                  <Weight className="w-3 h-3 inline mr-1" />Peso (g)
                 </label>
                 <input
                   type="number"
-                  value={numDisplay(form.weight_kg)}
-                  onChange={(e) => update('weight_kg', parseFloat(e.target.value) || 0)}
-                  min={0} step="0.01"
+                  value={numDisplay(form.weight_g)}
+                  onChange={(e) => update('weight_g', parseFloat(e.target.value) || 0)}
+                  min={0} step="1"
                   className={numInputClassDark}
-                  placeholder="0.5"
+                  placeholder="500"
                 />
               </div>
               <div>

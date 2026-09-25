@@ -45,7 +45,7 @@ export interface Product {
   tax_rate: number;
   price_total: number;
   price_sale: number;
-  weight_kg: number;
+  weight_g: number;
   height_cm: number;
   width_cm: number;
   length_cm: number;

@@ -1,57 +1,81 @@
-// Mercado Libre shipping cost matrix based on weight (kg) and sale price (CLP)
-// Three price tiers: up to $9,989 / $9,990–$19,989 / $19,990+
-// Weight brackets from 0.3kg up to 60kg+
+import { supabase } from '@/lib/supabase';
 
-interface WeightBracket {
-  maxKg: number;
-  costs: [number, number, number]; // [tier1, tier2, tier3]
+interface ShippingRate {
+  weight_min_g: number;
+  weight_max_g: number;
+  price_tier_1: number;
+  price_tier_2: number;
+  price_tier_3: number;
 }
 
-const shippingMatrix: WeightBracket[] = [
-  { maxKg: 0.3, costs: [800, 1000, 3050] },
-  { maxKg: 0.5, costs: [810, 1020, 3150] },
-  { maxKg: 1, costs: [830, 1040, 3250] },
-  { maxKg: 1.5, costs: [850, 1060, 3400] },
-  { maxKg: 2, costs: [870, 1080, 3600] },
-  { maxKg: 3, costs: [900, 1100, 3950] },
-  { maxKg: 4, costs: [1040, 1280, 4550] },
-  { maxKg: 5, costs: [1180, 1460, 4900] },
-  { maxKg: 6, costs: [1330, 1640, 5200] },
-  { maxKg: 8, costs: [1470, 1820, 5800] },
-  { maxKg: 10, costs: [1590, 1990, 6200] },
-  { maxKg: 15, costs: [1740, 2290, 7200] },
-  { maxKg: 20, costs: [1890, 2590, 8500] },
-  { maxKg: 25, costs: [2040, 2890, 10000] },
-  { maxKg: 30, costs: [2190, 3190, 13050] },
-  { maxKg: 40, costs: [2390, 3590, 15000] },
-  { maxKg: 50, costs: [2590, 3990, 17300] },
-  { maxKg: 60, costs: [2790, 4390, 19000] },
-];
+let cachedRates: ShippingRate[] | null = null;
 
-const COMMISSION_RATE = 0.19;
+async function fetchShippingRates(): Promise<ShippingRate[]> {
+  if (cachedRates) return cachedRates;
+  const { data, error } = await supabase
+    .from('shipping_rates')
+    .select('weight_min_g, weight_max_g, price_tier_1, price_tier_2, price_tier_3')
+    .order('weight_min_g');
+  if (error || !data || data.length === 0) return [];
+  cachedRates = data as ShippingRate[];
+  return cachedRates;
+}
 
-export function getShippingCost(weightKg: number, salePrice: number): number {
+export async function getShippingCostAsync(weightG: number, salePrice: number): Promise<number> {
+  const rates = await fetchShippingRates();
+  if (rates.length === 0) return 0;
+
   let tierIndex: 0 | 1 | 2;
-  if (salePrice < 9990) {
+  if (salePrice < 89990) {
     tierIndex = 0;
-  } else if (salePrice <= 19989) {
+  } else if (salePrice < 119990) {
     tierIndex = 1;
   } else {
     tierIndex = 2;
   }
 
-  const weight = Math.max(weightKg, 0);
+  const weight = Math.max(weightG, 0);
 
-  for (const bracket of shippingMatrix) {
-    if (weight <= bracket.maxKg) {
-      return bracket.costs[tierIndex];
+  for (const rate of rates) {
+    if (weight >= rate.weight_min_g && weight <= rate.weight_max_g) {
+      return [rate.price_tier_1, rate.price_tier_2, rate.price_tier_3][tierIndex];
     }
   }
 
-  // Over 60kg: extrapolate from last bracket with incremental steps
-  const last = shippingMatrix[shippingMatrix.length - 1];
-  const extraSteps = Math.ceil((weight - last.maxKg) / 10);
-  return last.costs[tierIndex] + extraSteps * 200;
+  // Over max bracket: return last bracket's price
+  const last = rates[rates.length - 1];
+  return [last.price_tier_1, last.price_tier_2, last.price_tier_3][tierIndex];
+}
+
+const COMMISSION_RATE = 0.19;
+
+export function getShippingCost(weightG: number, salePrice: number): number {
+  // Synchronous fallback using cached rates if available, otherwise 0
+  if (!cachedRates || cachedRates.length === 0) return 0;
+
+  let tierIndex: 0 | 1 | 2;
+  if (salePrice < 89990) {
+    tierIndex = 0;
+  } else if (salePrice < 119990) {
+    tierIndex = 1;
+  } else {
+    tierIndex = 2;
+  }
+
+  const weight = Math.max(weightG, 0);
+
+  for (const rate of cachedRates) {
+    if (weight >= rate.weight_min_g && weight <= rate.weight_max_g) {
+      return [rate.price_tier_1, rate.price_tier_2, rate.price_tier_3][tierIndex];
+    }
+  }
+
+  const last = cachedRates[cachedRates.length - 1];
+  return [last.price_tier_1, last.price_tier_2, last.price_tier_3][tierIndex];
+}
+
+export async function preloadShippingRates(): Promise<void> {
+  await fetchShippingRates();
 }
 
 export function getCommission(salePrice: number): number {
@@ -67,11 +91,11 @@ export interface MargenCalculation {
 export function calculateMargenML(
   salePrice: number,
   purchasePrice: number,
-  weightKg: number,
+  weightG: number,
   customShippingCost?: number,
 ): MargenCalculation {
   const commission = getCommission(salePrice);
-  const shippingCost = customShippingCost ?? getShippingCost(weightKg, salePrice);
+  const shippingCost = customShippingCost ?? getShippingCost(weightG, salePrice);
   const netMargin = salePrice - commission - shippingCost - purchasePrice;
   return { commission, shippingCost, netMargin };
 }

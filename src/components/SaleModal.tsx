@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
 import { ProductImage } from '@/components/ProductImage';
 import { formatCurrency } from '@/lib/utils';
-import { calculateMargenML, calculateMargenDirect, getShippingCost } from '@/lib/mercadolibre';
+import { calculateMargenML, calculateMargenDirect, getShippingCost, preloadShippingRates } from '@/lib/mercadolibre';
 
 interface SaleModalProps {
   product: Product;
@@ -32,16 +32,16 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
       return calculateMargenML(
         salePrice,
         purchasePrice,
-        product.weight_kg || 0,
+        product.weight_g || 0,
         overrideShipping ? customShipping : undefined,
       );
     }
     return calculateMargenDirect(salePrice, purchasePrice, overrideShipping ? customShipping : 0);
-  }, [channel, salePrice, purchasePrice, product.weight_kg, overrideShipping, customShipping]);
+  }, [channel, salePrice, purchasePrice, product.weight_g, overrideShipping, customShipping]);
 
   const autoShipping = useMemo(
-    () => getShippingCost(product.weight_kg || 0, salePrice),
-    [product.weight_kg, salePrice],
+    () => getShippingCost(product.weight_g || 0, salePrice),
+    [product.weight_g, salePrice],
   );
 
   const totalMargin = calc.netMargin * quantity;
@@ -139,7 +139,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
               <p className="text-sm font-semibold text-slate-800 truncate">{product.name}</p>
               <p className="text-xs text-slate-500">{product.sku} · Stock: {product.stock_current}</p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Compra: {formatCurrency(purchasePrice)} · {product.weight_kg || 0} kg
+                Compra: {formatCurrency(purchasePrice)} · {product.weight_g || 0} g
               </p>
             </div>
           </div>
