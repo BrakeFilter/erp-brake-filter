@@ -417,7 +417,7 @@ export function ProductFormModal({
                     onChange={(e) => update('barcode', e.target.value)}
                     className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 ${
                       barcodeStatus === 'taken' ? 'border-red-400 bg-red-50' : barcodeStatus === 'ok' ? 'border-green-400 bg-green-50' : 'border-slate-200'
-                    }`
+                    }`}
                     placeholder="Ej: 7800000000017"
                     autoComplete="off"
                     autoCorrect="off"
