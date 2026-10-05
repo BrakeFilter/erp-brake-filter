@@ -1,13 +1,16 @@
-import { useState, useMemo } from 'react';
-import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle, Package } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle, Package, Weight } from 'lucide-react';
 import type { Product, SaleChannel, ShippingCompany } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
 import { ProductImage } from '@/components/ProductImage';
 import { formatCurrency } from '@/lib/utils';
-import { calculateMargenML, calculateMargenDirect, getShippingCost } from '@/lib/mercadolibre';
+import {
+  calculateMLSale, calculateDirectSale, getShippingCost,
+  preloadShippingRates, getMlCommissionPercent,
+  type SaleCalculation,
+} from '@/lib/mercadolibre';
 
-const IVA_RATE = 0.19;
 const numField = (val: number) => (val === 0 ? '' : String(val));
 
 interface SaleModalProps {
@@ -26,43 +29,58 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
   const [shippingType, setShippingType] = useState<'despacho' | 'retiro'>('retiro');
   const [shippingCompany, setShippingCompany] = useState<ShippingCompany>('starken');
   const [shippingCostManual, setShippingCostManual] = useState(0);
+  const [mlCommissionPercent, setMlCommissionPercent] = useState(13.5);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      await preloadShippingRates();
+      const pct = await getMlCommissionPercent();
+      setMlCommissionPercent(pct);
+      setReady(true);
+    })();
+  }, []);
 
   const purchasePrice = product.price_total;
+  const totalWeight = (product.weight_g || 0) * quantity;
 
-  const calc = useMemo(() => {
+  const calc: SaleCalculation = useMemo(() => {
     if (channel === 'mercadolibre') {
-      return calculateMargenML(
-        salePrice,
-        purchasePrice,
-        product.weight_g || 0,
-        overrideShipping ? customShipping : undefined,
+      return calculateMLSale(
+        salePrice * quantity,
+        purchasePrice * quantity,
+        totalWeight,
+        mlCommissionPercent,
+        overrideShipping ? customShipping * quantity : undefined,
       );
     }
-    return calculateMargenDirect(salePrice, purchasePrice, overrideShipping ? customShipping : 0);
-  }, [channel, salePrice, purchasePrice, product.weight_g, overrideShipping, customShipping]);
+    return calculateDirectSale(
+      salePrice * quantity,
+      purchasePrice * quantity,
+      shippingType === 'despacho' ? (overrideShipping ? customShipping : shippingCostManual) * quantity : 0,
+    );
+  }, [channel, salePrice, quantity, purchasePrice, totalWeight, mlCommissionPercent, overrideShipping, customShipping, shippingType, shippingCostManual]);
 
   const autoShipping = useMemo(
-    () => getShippingCost(product.weight_g || 0, salePrice),
-    [product.weight_g, salePrice],
+    () => getShippingCost(totalWeight, salePrice * quantity),
+    [totalWeight, salePrice, quantity],
   );
 
-  const totalCommission = calc.commission * quantity;
-  const totalShipping = (overrideShipping ? customShipping : calc.shippingCost) * quantity;
-
-  // IVA 19% calculation - salePrice is NETO, system adds IVA
-  const netoUnit = salePrice;
-  const ivaUnit = Math.round(netoUnit * IVA_RATE);
-  const totalUnit = netoUnit + ivaUnit;
-
-  const netoTotal = netoUnit * quantity;
-  const ivaTotal = ivaUnit * quantity;
-  const totalWithIva = totalUnit * quantity;
-
-  const finalShippingCost = shippingType === 'retiro' ? 0 : (overrideShipping ? customShipping : shippingCostManual);
-
-  // Ganancia Bruta = (Precio Venta con IVA - Costo Producto - Costo Envío)
-  const grossProfit = totalWithIva - (purchasePrice * quantity) - finalShippingCost - totalCommission;
-  const marginPct = totalWithIva > 0 ? (grossProfit / totalWithIva) * 100 : 0;
+  // Suggested price to earn at least 20% margin
+  const suggestedPrice = useMemo(() => {
+    if (channel === 'mercadolibre') {
+      // Solve: margen_neto = precio - costo_total >= precio * 0.20
+      // precio - (costo + precio*comm% + precio*comm%*iva + precio*iva + envio) >= precio*0.20
+      // precio*(1 - comm% - comm%*iva - iva - 0.20) >= costo + envio
+      const comm = mlCommissionPercent / 100;
+      const factor = 1 - comm - comm * 0.19 - 0.19 - 0.20;
+      if (factor <= 0) return 0;
+      return Math.ceil((purchasePrice * quantity + autoShipping) / factor);
+    }
+    const factor = 1 - 0.19 - 0.20;
+    if (factor <= 0) return 0;
+    return Math.ceil((purchasePrice * quantity) / factor);
+  }, [channel, mlCommissionPercent, purchasePrice, quantity, autoShipping]);
 
   const handleSale = async () => {
     if (quantity < 1 || quantity > product.stock_current) {
@@ -70,7 +88,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
       return;
     }
     if (salePrice <= 0) {
-      showToast('El precio de venta debe ser mayor a 0', 'error');
+      showToast('El precio de publicación debe ser mayor a 0', 'error');
       return;
     }
 
@@ -103,10 +121,16 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
         .from('movements')
         .update({
           sale_channel: channel,
-          sale_price: totalWithIva,
-          shipping_cost: finalShippingCost,
-          commission: totalCommission,
-          net_margin: grossProfit,
+          sale_price: calc.precio_publicacion,
+          shipping_cost: calc.envio_ml,
+          commission: calc.comision_ml,
+          net_margin: calc.margen_neto,
+          iva_venta: calc.iva_venta,
+          comision_ml: calc.comision_ml,
+          iva_comision: calc.iva_comision,
+          envio_ml: calc.envio_ml,
+          costo_total_venta: calc.costo_total_venta,
+          margen_neto: calc.margen_neto,
         })
         .eq('id', movementData.id);
 
@@ -116,9 +140,9 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
         sku: product.sku,
         name: product.name,
         quantity: quantity,
-        sale_price: totalWithIva,
+        sale_price: calc.precio_publicacion,
         unit_cost: purchasePrice,
-        net_margin: grossProfit,
+        net_margin: calc.margen_neto,
         sale_channel: channel,
       });
     }
@@ -127,8 +151,8 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
     const newStock = result.new_stock ?? product.stock_current - quantity;
 
     showToast(
-      `Venta registrada: ${quantity}x ${product.name} — Ganancia: ${formatCurrency(grossProfit)}`,
-      grossProfit < 0 ? 'error' : 'success',
+      `Venta registrada: ${quantity}x ${product.name} — Margen: ${formatCurrency(calc.margen_neto)}`,
+      calc.margen_neto < 0 ? 'error' : 'success',
     );
 
     if (newStock <= product.stock_min) {
@@ -144,7 +168,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
+      className="fixed inset-0 bg-black/40 z-[95] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
       onClick={onClose}
     >
       <div
@@ -168,15 +192,15 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-slate-800 truncate">{product.name}</p>
               <p className="text-xs text-slate-500">{product.sku} · Stock: {product.stock_current}</p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Compra: {formatCurrency(purchasePrice)} · {product.weight_g || 0} g
+              <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+                Compra: {formatCurrency(purchasePrice)} · <Weight className="w-3 h-3" />{product.weight_g || 0} g
               </p>
             </div>
           </div>
 
           {/* Channel Selection */}
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-2">Canal de Venta</label>
+            <label className="block text-xs font-medium text-slate-600 mb-2">¿Tipo de venta?</label>
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setChannel('directa')}
@@ -203,13 +227,13 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
                 <ShoppingCart className="w-5 h-5" />
                 <div className="text-left">
                   <p className="text-sm font-semibold">Mercado Libre</p>
-                  <p className="text-[10px] opacity-70">Comisión 19%</p>
+                  <p className="text-[10px] opacity-70">Comisión {mlCommissionPercent}%</p>
                 </div>
               </button>
             </div>
           </div>
 
-          {/* Quantity + Price (Neto) */}
+          {/* Quantity + Price */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Cantidad</label>
@@ -224,7 +248,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
-                Precio Venta Neto ($)
+                {channel === 'mercadolibre' ? 'Precio Publicación ($)' : 'Precio Venta ($)'}
               </label>
               <input
                 type="number"
@@ -238,26 +262,17 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
           </div>
 
-          {/* IVA breakdown mini */}
-          {salePrice > 0 && (
-            <div className="flex items-center justify-between text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
-              <span>Neto: {formatCurrency(netoTotal)}</span>
-              <span>IVA 19%: {formatCurrency(ivaTotal)}</span>
-              <span className="font-semibold text-slate-700">Total c/IVA: {formatCurrency(totalWithIva)}</span>
+          {/* Weight info for ML */}
+          {channel === 'mercadolibre' && (
+            <div className="flex items-center justify-between text-xs text-slate-500 bg-yellow-50 rounded-lg px-3 py-2">
+              <span className="flex items-center gap-1"><Weight className="w-3 h-3" /> Peso total: {totalWeight} g</span>
+              <span>Envío auto: {formatCurrency(autoShipping)}</span>
             </div>
           )}
 
-          {/* Shipping (ML only) */}
+          {/* Shipping override (ML only) */}
           {channel === 'mercadolibre' && (
             <div className="bg-yellow-50 rounded-xl border border-yellow-200 p-3 space-y-2">
-              <div className="flex items-center gap-2">
-                <Truck className="w-4 h-4 text-yellow-600" />
-                <p className="text-xs font-medium text-yellow-800">Costo de Envío (Mercado Libre)</p>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-slate-600">Calculado automáticamente:</span>
-                <span className="font-bold text-slate-800">{formatCurrency(autoShipping)}</span>
-              </div>
               <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
                 <input
                   type="checkbox"
@@ -265,7 +280,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
                   onChange={(e) => setOverrideShipping(e.target.checked)}
                   className="rounded"
                 />
-                Sobrescribir manualmente
+                Sobrescribir envío manualmente
               </label>
               {overrideShipping && (
                 <input
@@ -281,99 +296,135 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
           )}
 
-          {/* Shipping Options */}
-          <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">Tipo de Entrega</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => setShippingType('retiro')}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
-                    shippingType === 'retiro' ? 'border-green-500 bg-green-50 text-green-700' : 'border-slate-200 text-slate-500'}`}>
-                  <Package className="w-4 h-4" />
-                  Retiro en Local
-                </button>
-                <button type="button" onClick={() => setShippingType('despacho')}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
-                    shippingType === 'despacho' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500'}`}>
-                  <Truck className="w-4 h-4" />
-                  Despacho
-                </button>
+          {/* Shipping for Directa */}
+          {channel === 'directa' && (
+            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Tipo de Entrega</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setShippingType('retiro')}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                      shippingType === 'retiro' ? 'border-green-500 bg-green-50 text-green-700' : 'border-slate-200 text-slate-500'}`}>
+                    <Package className="w-4 h-4" />
+                    Retiro en Local
+                  </button>
+                  <button type="button" onClick={() => setShippingType('despacho')}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                      shippingType === 'despacho' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500'}`}>
+                    <Truck className="w-4 h-4" />
+                    Despacho
+                  </button>
+                </div>
               </div>
+              {shippingType === 'despacho' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Empresa Envío</label>
+                    <select value={shippingCompany}
+                      onChange={(e) => setShippingCompany(e.target.value as ShippingCompany)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 bg-white">
+                      <option value="starken">Starken</option>
+                      <option value="chilexpress">Chilexpress</option>
+                      <option value="bluex">Bluex</option>
+                      <option value="otro">Otro</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Costo Envío ($)</label>
+                    <input type="number" value={numField(shippingCostManual)}
+                      onChange={(e) => setShippingCostManual(parseFloat(e.target.value) || 0)}
+                      min={0} step="any"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                      placeholder="0" />
+                  </div>
+                </div>
+              )}
             </div>
+          )}
 
-            {shippingType === 'despacho' && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Empresa Envío</label>
-                  <select value={shippingCompany}
-                    onChange={(e) => setShippingCompany(e.target.value as ShippingCompany)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 bg-white">
-                    <option value="starken">Starken</option>
-                    <option value="chilexpress">Chilexpress</option>
-                    <option value="bluex">Bluex</option>
-                    <option value="otro">Otro</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Costo Envío ($)</label>
-                  <input type="number" value={numField(shippingCostManual)}
-                    onChange={(e) => setShippingCostManual(parseFloat(e.target.value) || 0)}
-                    min={0} step="any"
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
-                    placeholder="0" />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Ganancia Bruta Breakdown */}
+          {/* Professional Breakdown */}
           <div className="bg-slate-900 rounded-xl p-4 text-white space-y-2">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-2">
               <TrendingUp className="w-4 h-4 text-green-400" />
-              <h4 className="text-sm font-semibold">Desglose de Ganancia</h4>
+              <h4 className="text-sm font-semibold">
+                {channel === 'mercadolibre' ? 'VENTA MERCADO LIBRE — PROPUESTA REAL' : 'VENTA DIRECTA — PROPUESTA REAL'}
+              </h4>
+            </div>
+
+            <div className="text-xs text-slate-400 mb-2">
+              Producto: {product.sku} — {product.name}<br />
+              Cantidad: {quantity} unidad{quantity !== 1 ? 'es' : ''} · Peso: {totalWeight} g<br />
+              {channel === 'mercadolibre' ? 'Precio publicación' : 'Precio venta'}: {formatCurrency(salePrice * quantity)}
             </div>
 
             <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Total Venta (con IVA 19%)</span>
-              <span className="font-medium text-white">{formatCurrency(totalWithIva)}</span>
+              <span className="text-slate-400">IVA Venta (19%)</span>
+              <span className="text-red-400">-{formatCurrency(calc.iva_venta)}</span>
             </div>
+            {channel === 'mercadolibre' && (
+              <>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Comisión ML ({mlCommissionPercent}%)</span>
+                  <span className="text-red-400">-{formatCurrency(calc.comision_ml)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">IVA Comisión (19%)</span>
+                  <span className="text-red-400">-{formatCurrency(calc.iva_comision)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Envío ML</span>
+                  <span className="text-red-400">-{formatCurrency(calc.envio_ml)}</span>
+                </div>
+              </>
+            )}
+            {channel === 'directa' && calc.envio_ml > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Costo Envío</span>
+                <span className="text-red-400">-{formatCurrency(calc.envio_ml)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Costo Producto ({quantity}x)</span>
-              <span className="text-red-400">-{formatCurrency(purchasePrice * quantity)}</span>
+              <span className="text-slate-400">Costo producto ({quantity}x)</span>
+              <span className="text-red-400">-{formatCurrency(calc.costo_producto)}</span>
             </div>
-            {channel === 'mercadolibre' && totalCommission > 0 && (
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Comisión ML 19%</span>
-                <span className="text-red-400">-{formatCurrency(totalCommission)}</span>
-              </div>
-            )}
-            {finalShippingCost > 0 && (
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Costo Envío {shippingType === 'despacho' ? `(${shippingCompany})` : ''}</span>
-                <span className="text-red-400">-{formatCurrency(finalShippingCost)}</span>
-              </div>
-            )}
 
             <div className="flex justify-between pt-2 border-t border-slate-700">
-              <span className="text-green-400 font-semibold">GANANCIA BRUTA</span>
-              <span className="text-2xl font-bold text-green-400">{formatCurrency(grossProfit)}</span>
+              <span className="text-white font-semibold">COSTO TOTAL VENTA</span>
+              <span className="text-xl font-bold text-white">{formatCurrency(calc.costo_total_venta)}</span>
+            </div>
+
+            <div className="flex justify-between pt-2">
+              <span className={`font-semibold ${calc.margen_neto >= 0 ? 'text-green-400' : 'text-red-400'}`}>MARGEN NETO</span>
+              <span className={`text-2xl font-bold ${calc.margen_neto >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {calc.margen_neto >= 0 ? '' : '-'}{formatCurrency(Math.abs(calc.margen_neto))}
+              </span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-slate-500">Margen</span>
-              <span className={`font-medium ${marginPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {marginPct.toFixed(1)}%
+              <span className={`font-medium ${calc.margen_porcentaje >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {calc.margen_porcentaje.toFixed(2)}%
               </span>
-            </div>
-            <div className="flex justify-between text-xs pt-1 border-t border-slate-800">
-              <span className="text-slate-500">IVA 19% incluido</span>
-              <span className="text-slate-400">{formatCurrency(ivaTotal)}</span>
             </div>
           </div>
 
-          {grossProfit < 0 && (
-            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-2.5 border border-red-200">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>Esta venta genera pérdida. Verifica precios o costo de envío.</span>
+          {/* Loss warning with suggested price */}
+          {calc.margen_neto < 0 && (
+            <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-3 border border-red-200">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold">¡Estás perdiendo dinero!</p>
+                {suggestedPrice > 0 && (
+                  <p className="text-xs mt-0.5">Sube el precio a {formatCurrency(Math.ceil(suggestedPrice / quantity))} para ganar 20% de margen.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Loading state */}
+          {!ready && (
+            <div className="flex items-center justify-center py-2 text-xs text-slate-400">
+              <div className="w-4 h-4 border-2 border-slate-200 border-t-red-500 rounded-full animate-spin mr-2" />
+              Cargando tarifas...
             </div>
           )}
 
@@ -387,7 +438,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </button>
             <button
               onClick={handleSale}
-              disabled={saving}
+              disabled={saving || !ready}
               className="flex-1 px-4 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors shadow-sm disabled:opacity-50"
             >
               {saving ? 'Procesando...' : 'Confirmar Venta'}

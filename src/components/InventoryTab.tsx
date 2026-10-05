@@ -201,7 +201,9 @@ export function InventoryTab({
   };
 
   const handleNewCode = useCallback((code: string) => {
-    setShowScan(false);
+    // Do NOT close the scan modal — keep it open so the cart is preserved
+    // The form modal renders on top (z-70 vs z-80 for scan, but form is rendered after)
+    // Actually form is z-70 and scan is z-80, so we need to bump form above scan
     setFormBarcode(code);
     setEditProduct(null);
     setShowForm(true);

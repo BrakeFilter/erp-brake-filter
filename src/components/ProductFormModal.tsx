@@ -233,7 +233,7 @@ export function ProductFormModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
+      className="fixed inset-0 bg-black/40 z-[90] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
       onClick={onClose}
     >
       <div

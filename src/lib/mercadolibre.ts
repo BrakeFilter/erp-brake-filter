@@ -9,6 +9,7 @@ interface ShippingRate {
 }
 
 let cachedRates: ShippingRate[] | null = null;
+let cachedMlCommissionPercent: number | null = null;
 
 async function fetchShippingRates(): Promise<ShippingRate[]> {
   if (cachedRates) return cachedRates;
@@ -42,15 +43,25 @@ export async function getShippingCostAsync(weightG: number, salePrice: number): 
     }
   }
 
-  // Over max bracket: return last bracket's price
   const last = rates[rates.length - 1];
   return [last.price_tier_1, last.price_tier_2, last.price_tier_3][tierIndex];
 }
 
-const COMMISSION_RATE = 0.19;
+export async function getMlCommissionPercent(): Promise<number> {
+  if (cachedMlCommissionPercent !== null) return cachedMlCommissionPercent;
+  const { data } = await supabase
+    .from('company_settings')
+    .select('ml_commission_percent')
+    .maybeSingle();
+  cachedMlCommissionPercent = data?.ml_commission_percent ?? 13.5;
+  return cachedMlCommissionPercent;
+}
+
+export function setMlCommissionPercent(percent: number) {
+  cachedMlCommissionPercent = percent;
+}
 
 export function getShippingCost(weightG: number, salePrice: number): number {
-  // Synchronous fallback using cached rates if available, otherwise 0
   if (!cachedRates || cachedRates.length === 0) return 0;
 
   let tierIndex: 0 | 1 | 2;
@@ -76,38 +87,72 @@ export function getShippingCost(weightG: number, salePrice: number): number {
 
 export async function preloadShippingRates(): Promise<void> {
   await fetchShippingRates();
+  await getMlCommissionPercent();
 }
 
-export function getCommission(salePrice: number): number {
-  return Math.round(salePrice * COMMISSION_RATE);
+// Real Chilean ML calculation with IVA 19%
+export interface SaleCalculation {
+  precio_publicacion: number;
+  iva_venta: number;
+  comision_ml: number;
+  iva_comision: number;
+  envio_ml: number;
+  costo_producto: number;
+  costo_total_venta: number;
+  margen_neto: number;
+  margen_porcentaje: number;
 }
 
-export interface MargenCalculation {
-  commission: number;
-  shippingCost: number;
-  netMargin: number;
-}
+const IVA_RATE = 0.19;
 
-export function calculateMargenML(
-  salePrice: number,
-  purchasePrice: number,
-  weightG: number,
-  customShippingCost?: number,
-): MargenCalculation {
-  const commission = getCommission(salePrice);
-  const shippingCost = customShippingCost ?? getShippingCost(weightG, salePrice);
-  const netMargin = salePrice - commission - shippingCost - purchasePrice;
-  return { commission, shippingCost, netMargin };
-}
+export function calculateMLSale(
+  precioPublicacion: number,
+  costoProducto: number,
+  pesoGramos: number,
+  comisionPercent: number,
+  customShipping?: number,
+): SaleCalculation {
+  const iva_venta = Math.round(precioPublicacion * IVA_RATE);
+  const comision_ml = Math.round(precioPublicacion * (comisionPercent / 100));
+  const iva_comision = Math.round(comision_ml * IVA_RATE);
+  const envio_ml = customShipping ?? getShippingCost(pesoGramos, precioPublicacion);
+  const costo_total_venta = costoProducto + comision_ml + iva_comision + iva_venta + envio_ml;
+  const margen_neto = precioPublicacion - costo_total_venta;
+  const margen_porcentaje = precioPublicacion > 0 ? (margen_neto / precioPublicacion) * 100 : 0;
 
-export function calculateMargenDirect(
-  salePrice: number,
-  purchasePrice: number,
-  shippingCost = 0,
-): MargenCalculation {
   return {
-    commission: 0,
-    shippingCost,
-    netMargin: salePrice - shippingCost - purchasePrice,
+    precio_publicacion: precioPublicacion,
+    iva_venta,
+    comision_ml,
+    iva_comision,
+    envio_ml,
+    costo_producto: costoProducto,
+    costo_total_venta,
+    margen_neto,
+    margen_porcentaje,
+  };
+}
+
+export function calculateDirectSale(
+  precioVenta: number,
+  costoProducto: number,
+  customShipping = 0,
+): SaleCalculation {
+  const iva_venta = Math.round(precioVenta * IVA_RATE);
+  const envio_ml = customShipping;
+  const costo_total_venta = costoProducto + iva_venta + envio_ml;
+  const margen_neto = precioVenta - costo_total_venta;
+  const margen_porcentaje = precioVenta > 0 ? (margen_neto / precioVenta) * 100 : 0;
+
+  return {
+    precio_publicacion: precioVenta,
+    iva_venta,
+    comision_ml: 0,
+    iva_comision: 0,
+    envio_ml,
+    costo_producto: costoProducto,
+    costo_total_venta,
+    margen_neto,
+    margen_porcentaje,
   };
 }

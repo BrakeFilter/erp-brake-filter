@@ -16,9 +16,11 @@ export interface CompanySettings {
   id: string;
   company_name: string;
   logo_url: string | null;
+  app_logo_url: string | null;
   primary_color: string;
   font_family: string;
   active_modules: Record<string, boolean>;
+  ml_commission_percent: number;
   created_at: string;
   updated_at: string;
 }
@@ -72,6 +74,12 @@ export interface Movement {
   shipping_cost: number;
   commission: number;
   net_margin: number;
+  iva_venta: number;
+  comision_ml: number;
+  iva_comision: number;
+  envio_ml: number;
+  costo_total_venta: number;
+  margen_neto: number;
   created_at: string;
   products?: Product;
 }

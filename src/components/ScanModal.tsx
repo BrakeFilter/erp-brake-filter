@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Camera, Usb, ScanLine, Flashlight, FlashlightOff, AlertCircle, CheckCircle2, ShoppingCart, PlusCircle, Trash2, Minus } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
+import { supabase } from '@/lib/supabase';
 import type { Product } from '@/types';
 import { formatCurrency } from '@/lib/utils';
 
@@ -23,6 +24,7 @@ interface ScanModalProps {
 
 const STORAGE_KEY = 'bf_scanner_mode';
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+const MIN_CODE_LENGTH = 8;
 
 function getStoredMode(): ScanMode {
   try {
@@ -30,6 +32,18 @@ function getStoredMode(): ScanMode {
     if (stored === 'camera' || stored === 'hardware') return stored;
   } catch { /* ignore */ }
   return isMobile ? 'camera' : 'hardware';
+}
+
+// BarcodeDetector types
+interface BarcodeDetectorResult {
+  rawValue: string;
+  format: string;
+}
+interface BarcodeDetectorClass {
+  new (options?: { formats?: string[] }): {
+    detect: (source: CanvasImageSource) => Promise<BarcodeDetectorResult[]>;
+  };
+  getSupportedFormats?: () => Promise<string[]>;
 }
 
 export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSell }: ScanModalProps) {
@@ -45,6 +59,9 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
   const hardwareInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastScanTimeRef = useRef<number>(0);
+  const barcodeDetectorRef = useRef<InstanceType<BarcodeDetectorClass> | null>(null);
+  const detectLoopRef = useRef<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const CAMERA_COOLDOWN_MS = 1000;
 
   const persistMode = (m: ScanMode) => {
@@ -52,13 +69,22 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
     try { localStorage.setItem(STORAGE_KEY, m); } catch { /* ignore */ }
   };
 
-  const processCode = useCallback((code: string, isCamera = false) => {
-    // Cooldown ONLY for camera mode to prevent duplicate scans
+  const normalizeCode = (code: string) => code.trim().toUpperCase();
+
+  // Async lookup in database — only opens new product modal if truly not in DB
+  const processCode = useCallback(async (rawCode: string, isCamera = false) => {
+    const code = normalizeCode(rawCode);
+
+    // Min length validation to prevent false positives
+    if (code.length < MIN_CODE_LENGTH) return;
+
+    // Cooldown ONLY for camera mode
     if (isCamera) {
       const now = Date.now();
       if (now - lastScanTimeRef.current < CAMERA_COOLDOWN_MS) return;
       lastScanTimeRef.current = now;
     }
+
     // Beep + vibrate
     try {
       const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -72,41 +98,118 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
     } catch { /* ignore */ }
     try { navigator.vibrate?.(200); } catch { /* ignore */ }
 
-    const found = products.find(
-      (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase(),
+    // First: check if already in cart — if so, just increment
+    let inCart = false;
+    setScannedItems((prev) => {
+      const existing = prev.find((i) => normalizeCode(i.code) === code);
+      if (existing) {
+        inCart = true;
+        return prev.map((i) =>
+          normalizeCode(i.code) === code ? { ...i, qty: i.qty + 1 } : i,
+        );
+      }
+      return prev;
+    });
+    if (inCart) {
+      setLastScanned(code);
+      setTimeout(() => setLastScanned(null), 1500);
+      return;
+    }
+
+    // Second: check in-memory products list (fast path)
+    const localFound = products.find(
+      (p) => normalizeCode(p.barcode || '') === code || normalizeCode(p.sku) === code,
     );
 
-    if (found) {
-      // If already in list, increment quantity +1
-      setScannedItems((prev) => {
-        const existing = prev.find((i) => i.code === code);
-        if (existing) {
-          return prev.map((i) =>
-            i.code === code ? { ...i, qty: i.qty + 1 } : i,
-          );
-        }
-        return [...prev, { code, product: found, qty: 1 }];
-      });
+    if (localFound) {
+      setScannedItems((prev) => [...prev, { code: rawCode.trim(), product: localFound, qty: 1 }]);
+      setLastScanned(code);
+      setTimeout(() => setLastScanned(null), 1500);
+      return;
+    }
+
+    // Third: async DB lookup — only open new product modal if truly not in DB
+    const { data: dbProduct } = await supabase
+      .from('products')
+      .select('*')
+      .or(`barcode.eq.${code},sku.eq.${code}`)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (dbProduct) {
+      const product = dbProduct as Product;
+      setScannedItems((prev) => [...prev, { code: rawCode.trim(), product, qty: 1 }]);
       setLastScanned(code);
       setTimeout(() => setLastScanned(null), 1500);
     } else {
-      onNewCode(code);
+      // Only now — truly new product, open the modal
+      onNewCode(rawCode.trim());
     }
   }, [products, onNewCode]);
 
   const startCamera = useCallback(async () => {
     setCameraError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false,
+      });
       streamRef.current = stream;
-      const html5Qr = new Html5Qrcode('scan-camera-view');
-      html5QrRef.current = html5Qr;
-      await html5Qr.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 250, height: 180 } },
-        (decoded: string) => { processCode(decoded, true); },
-        () => {},
-      );
+
+      // Try BarcodeDetector first (native, more reliable on Android)
+      const BarcodeDetectorCtor = (window as unknown as { BarcodeDetector?: BarcodeDetectorClass }).BarcodeDetector;
+
+      if (BarcodeDetectorCtor) {
+        try {
+          barcodeDetectorRef.current = new BarcodeDetectorCtor({
+            formats: ['ean_13', 'code_128', 'ean_8', 'upc_a', 'upc_e', 'qr_code'],
+          });
+
+          // Create a video element for BarcodeDetector
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.playsInline = true;
+          video.muted = true;
+          videoRef.current = video;
+          await video.play();
+
+          // Mount video into the camera view container
+          const container = document.getElementById('scan-camera-view');
+          if (container) {
+            container.innerHTML = '';
+            container.appendChild(video);
+            video.style.width = '100%';
+            video.style.height = '100%';
+            video.style.objectFit = 'cover';
+          }
+
+          // Detection loop
+          const detectLoop = async () => {
+            if (!barcodeDetectorRef.current || !videoRef.current || videoRef.current.readyState < 2) {
+              detectLoopRef.current = requestAnimationFrame(detectLoop);
+              return;
+            }
+            try {
+              const barcodes = await barcodeDetectorRef.current.detect(videoRef.current);
+              if (barcodes.length > 0) {
+                const code = barcodes[0].rawValue;
+                if (code && code.length >= MIN_CODE_LENGTH) {
+                  void processCode(code, true);
+                }
+              }
+            } catch { /* ignore detection errors */ }
+            detectLoopRef.current = requestAnimationFrame(detectLoop);
+          };
+          detectLoop();
+        } catch {
+          // Fallback to Html5Qrcode if BarcodeDetector fails
+          await startHtml5Qr(stream);
+        }
+      } else {
+        // No BarcodeDetector — use Html5Qrcode
+        await startHtml5Qr(stream);
+      }
+
       setCameraActive(true);
       const track = stream.getVideoTracks()[0];
       const caps = track.getCapabilities?.() as MediaTrackCapabilities & { torch?: boolean };
@@ -117,7 +220,35 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
     }
   }, [processCode]);
 
+  const startHtml5Qr = async (stream: MediaStream) => {
+    streamRef.current = stream;
+    const html5Qr = new Html5Qrcode('scan-camera-view');
+    html5QrRef.current = html5Qr;
+    await html5Qr.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 180 } },
+      (decoded: string) => {
+        if (decoded.length >= MIN_CODE_LENGTH) {
+          void processCode(decoded, true);
+        }
+      },
+      () => {},
+    );
+  };
+
   const stopCamera = useCallback(async () => {
+    if (detectLoopRef.current) {
+      cancelAnimationFrame(detectLoopRef.current);
+      detectLoopRef.current = null;
+    }
+    if (barcodeDetectorRef.current) {
+      barcodeDetectorRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+      videoRef.current = null;
+    }
     if (html5QrRef.current) {
       try { await html5QrRef.current.stop(); await html5QrRef.current.clear(); } catch { /* ignore */ }
       html5QrRef.current = null;
@@ -142,21 +273,20 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
   const handleHardwareSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const code = hardwareInput.trim();
-    if (code.length >= 1) { processCode(code, false); setHardwareInput(''); }
+    if (code.length >= 1) { void processCode(code, false); setHardwareInput(''); }
   };
 
   useEffect(() => {
-    if (!open) { stopCamera(); return; }
-    if (mode === 'camera') { startCamera(); }
-    else { stopCamera(); setTimeout(() => hardwareInputRef.current?.focus(), 100); }
-    return () => { stopCamera(); };
+    if (!open) { void stopCamera(); return; }
+    if (mode === 'camera') { void startCamera(); }
+    else { void stopCamera(); setTimeout(() => hardwareInputRef.current?.focus(), 100); }
+    return () => { void stopCamera(); };
   }, [open, mode, startCamera, stopCamera]);
 
-  useEffect(() => { return () => { stopCamera(); }; }, [stopCamera]);
+  useEffect(() => { return () => { void stopCamera(); }; }, [stopCamera]);
 
-  useEffect(() => {
-    if (!open) setScannedItems([]);
-  }, [open]);
+  // NOTE: Do NOT clear scannedItems on close — cart must persist
+  // The parent component controls when to clear via onPurchase/onSell
 
   if (!open) return null;
 
@@ -227,7 +357,7 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
                 <div className="flex flex-col items-center justify-center py-8">
                   <AlertCircle className="w-10 h-10 text-red-400 mb-3" />
                   <p className="text-sm text-red-600 text-center mb-3">{cameraError}</p>
-                  <button onClick={startCamera} className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">Reintentar</button>
+                  <button onClick={() => void startCamera()} className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">Reintentar</button>
                 </div>
               ) : (
                 <>
@@ -297,13 +427,12 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
               </div>
               <div className="space-y-1.5 max-h-40 overflow-y-auto">
                 {scannedItems.map((item) => (
-                  <div key={item.code} className={`flex items-center gap-2 rounded-lg p-2.5 border transition-all ${lastScanned === item.code ? 'bg-green-100 border-green-300 scale-[1.02]' : 'bg-green-50 border-green-200'}`}>
+                  <div key={item.code} className={`flex items-center gap-2 rounded-lg p-2.5 border transition-all ${lastScanned === normalizeCode(item.code) ? 'bg-green-100 border-green-300 scale-[1.02]' : 'bg-green-50 border-green-200'}`}>
                     <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-green-800 truncate">{item.product.name}</p>
                       <p className="text-[10px] text-green-600">{item.product.sku} · {formatCurrency(item.product.price_total)}</p>
                     </div>
-                    {/* Quantity controls */}
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <button onClick={() => adjustQty(item.code, -1)}
                         className="w-6 h-6 rounded bg-white border border-green-300 text-green-700 flex items-center justify-center hover:bg-green-50">
@@ -323,7 +452,6 @@ export function ScanModal({ open, onClose, products, onNewCode, onPurchase, onSe
                 ))}
               </div>
 
-              {/* Action buttons */}
               <div className="grid grid-cols-2 gap-2 pt-2">
                 <button onClick={handlePurchase}
                   className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors">
