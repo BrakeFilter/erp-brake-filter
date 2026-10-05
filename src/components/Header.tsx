@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Disc, Wrench, LogOut, Download } from 'lucide-react';
+import { Disc, Wrench, LogOut, Smartphone } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { showToast } from '@/components/ToastContainer';
 
 interface HeaderProps {
   onNavigateSettings?: () => void;
@@ -13,22 +14,40 @@ interface BeforeInstallPromptEvent extends Event {
 
 export function Header({ onNavigateSettings }: HeaderProps) {
   const { companySettings, signOut, user } = useAuth();
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showInstall, setShowInstall] = useState(false);
 
   useEffect(() => {
+    const checkInstall = () => {
+      setShowInstall(!!window.deferredPrompt);
+    };
+
     const handler = (e: Event) => {
       e.preventDefault();
-      setInstallPrompt(e as BeforeInstallPromptEvent);
+      window.deferredPrompt = e as BeforeInstallPromptEvent;
+      setShowInstall(true);
     };
-    const readyHandler = () => {
-      if (window.__pwaInstallEvent) setInstallPrompt(window.__pwaInstallEvent);
+
+    const installedHandler = () => {
+      window.deferredPrompt = undefined;
+      setShowInstall(false);
     };
+
     window.addEventListener('beforeinstallprompt', handler);
-    window.addEventListener('pwa-install-available', readyHandler);
-    if (window.__pwaInstallEvent) setInstallPrompt(window.__pwaInstallEvent);
+    window.addEventListener('pwa-install-available', checkInstall);
+    window.addEventListener('appinstalled', installedHandler);
+
+    // Check if already available
+    setShowInstall(!!window.deferredPrompt);
+
+    // Detect if already running as installed PWA
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setShowInstall(false);
+    }
+
     return () => {
       window.removeEventListener('beforeinstallprompt', handler);
-      window.removeEventListener('pwa-install-available', readyHandler);
+      window.removeEventListener('pwa-install-available', checkInstall);
+      window.removeEventListener('appinstalled', installedHandler);
     };
   }, []);
 
@@ -40,10 +59,15 @@ export function Header({ onNavigateSettings }: HeaderProps) {
   };
 
   const handleInstall = async () => {
-    if (!installPrompt) return;
-    await installPrompt.prompt();
-    await installPrompt.userChoice;
-    setInstallPrompt(null);
+    const prompt = window.deferredPrompt;
+    if (!prompt) return;
+    await prompt.prompt();
+    const { outcome } = await prompt.userChoice;
+    if (outcome === 'accepted') {
+      showToast('App instalada correctamente', 'success');
+    }
+    window.deferredPrompt = undefined;
+    setShowInstall(false);
   };
 
   return (
@@ -74,13 +98,13 @@ export function Header({ onNavigateSettings }: HeaderProps) {
           </div>
         </button>
         <div className="ml-auto flex items-center gap-2 flex-shrink-0">
-          {installPrompt && (
+          {showInstall && (
             <button
               onClick={handleInstall}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-colors animate-fade-in"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-green-600 text-white hover:bg-green-700 transition-colors animate-fade-in shadow-sm"
               title="Instalar app en tu dispositivo"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Smartphone className="w-4 h-4" />
               <span className="hidden sm:inline">Instalar App</span>
             </button>
           )}
