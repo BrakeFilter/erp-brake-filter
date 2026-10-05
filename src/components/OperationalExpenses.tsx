@@ -33,6 +33,8 @@ export function OperationalExpenses({ expenses, onRefresh }: OperationalExpenses
   });
   const [saving, setSaving] = useState(false);
 
+  const numField = (val: number) => (val === 0 ? '' : String(val));
+
   const totalMonthly = expenses
     .filter((e) => e.frequency === 'mensual')
     .reduce((sum, e) => sum + e.amount, 0);
@@ -249,7 +251,7 @@ export function OperationalExpenses({ expenses, onRefresh }: OperationalExpenses
                   </label>
                   <input
                     type="number"
-                    value={form.amount}
+                    value={numField(form.amount)}
                     onChange={(e) => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
                     min={0}
                     step="any"

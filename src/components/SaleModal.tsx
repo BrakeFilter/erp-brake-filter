@@ -1,11 +1,14 @@
 import { useState, useMemo } from 'react';
-import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle, Percent, Package } from 'lucide-react';
+import { X, ShoppingCart, Store, Truck, TrendingUp, AlertCircle, Package } from 'lucide-react';
 import type { Product, SaleChannel, ShippingCompany } from '@/types';
 import { supabase } from '@/lib/supabase';
 import { showToast } from '@/components/ToastContainer';
 import { ProductImage } from '@/components/ProductImage';
 import { formatCurrency } from '@/lib/utils';
-import { calculateMargenML, calculateMargenDirect, getShippingCost, preloadShippingRates } from '@/lib/mercadolibre';
+import { calculateMargenML, calculateMargenDirect, getShippingCost } from '@/lib/mercadolibre';
+
+const IVA_RATE = 0.19;
+const numField = (val: number) => (val === 0 ? '' : String(val));
 
 interface SaleModalProps {
   product: Product;
@@ -20,7 +23,6 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
   const [overrideShipping, setOverrideShipping] = useState(false);
   const [customShipping, setCustomShipping] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [commission19, setCommission19] = useState(false);
   const [shippingType, setShippingType] = useState<'despacho' | 'retiro'>('retiro');
   const [shippingCompany, setShippingCompany] = useState<ShippingCompany>('starken');
   const [shippingCostManual, setShippingCostManual] = useState(0);
@@ -44,15 +46,23 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
     [product.weight_g, salePrice],
   );
 
-  const totalMargin = calc.netMargin * quantity;
-  const totalShipping = (overrideShipping ? customShipping : calc.shippingCost) * quantity;
   const totalCommission = calc.commission * quantity;
+  const totalShipping = (overrideShipping ? customShipping : calc.shippingCost) * quantity;
 
-  const subtotal = salePrice * quantity;
-  const commissionAmount = commission19 ? Math.round(subtotal * 0.19) : 0;
-  const totalWithCommission = subtotal + commissionAmount;
+  // IVA 19% calculation - salePrice is NETO, system adds IVA
+  const netoUnit = salePrice;
+  const ivaUnit = Math.round(netoUnit * IVA_RATE);
+  const totalUnit = netoUnit + ivaUnit;
+
+  const netoTotal = netoUnit * quantity;
+  const ivaTotal = ivaUnit * quantity;
+  const totalWithIva = totalUnit * quantity;
+
   const finalShippingCost = shippingType === 'retiro' ? 0 : (overrideShipping ? customShipping : shippingCostManual);
-  const finalTotal = totalWithCommission + finalShippingCost;
+
+  // Ganancia Bruta = (Precio Venta con IVA - Costo Producto - Costo Envío)
+  const grossProfit = totalWithIva - (purchasePrice * quantity) - finalShippingCost - totalCommission;
+  const marginPct = totalWithIva > 0 ? (grossProfit / totalWithIva) * 100 : 0;
 
   const handleSale = async () => {
     if (quantity < 1 || quantity > product.stock_current) {
@@ -80,7 +90,6 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
       return;
     }
 
-    // Update the movement record with sale details
     const { data: movementData } = await supabase
       .from('movements')
       .select('id')
@@ -94,31 +103,39 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
         .from('movements')
         .update({
           sale_channel: channel,
-          sale_price: totalWithCommission,
+          sale_price: totalWithIva,
           shipping_cost: finalShippingCost,
-          commission: commissionAmount + totalCommission,
-          net_margin: totalWithCommission - (purchasePrice * quantity) - finalShippingCost - totalCommission - commissionAmount,
+          commission: totalCommission,
+          net_margin: grossProfit,
         })
         .eq('id', movementData.id);
 
-      // Insert sale_items for metrics tracking
       await supabase.from('sale_items').insert({
         movement_id: movementData.id,
         product_id: product.id,
         sku: product.sku,
         name: product.name,
         quantity: quantity,
-        sale_price: totalWithCommission,
+        sale_price: totalWithIva,
         unit_cost: purchasePrice,
-        net_margin: totalWithCommission - (purchasePrice * quantity) - finalShippingCost - totalCommission - commissionAmount,
+        net_margin: grossProfit,
         sale_channel: channel,
       });
     }
 
+    const result = data as { success?: boolean; new_stock?: number };
+    const newStock = result.new_stock ?? product.stock_current - quantity;
+
     showToast(
-      `Venta registrada: ${quantity}x ${product.name} — Total: ${formatCurrency(finalTotal)}`,
-      totalMargin < 0 ? 'error' : 'success',
+      `Venta registrada: ${quantity}x ${product.name} — Ganancia: ${formatCurrency(grossProfit)}`,
+      grossProfit < 0 ? 'error' : 'success',
     );
+
+    if (newStock <= product.stock_min) {
+      setTimeout(() => {
+        showToast(`Stock bajo: ${product.name} tiene ${newStock} unidades (mín: ${product.stock_min})`, 'info');
+      }, 800);
+    }
 
     setSaving(false);
     onSold();
@@ -192,7 +209,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
           </div>
 
-          {/* Quantity + Price */}
+          {/* Quantity + Price (Neto) */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Cantidad</label>
@@ -207,18 +224,28 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
-                Precio Venta Unit. ($)
+                Precio Venta Neto ($)
               </label>
               <input
                 type="number"
-                value={salePrice}
+                value={numField(salePrice)}
                 onChange={(e) => setSalePrice(parseFloat(e.target.value) || 0)}
                 min={0}
                 step="any"
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+                placeholder="0"
               />
             </div>
           </div>
+
+          {/* IVA breakdown mini */}
+          {salePrice > 0 && (
+            <div className="flex items-center justify-between text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+              <span>Neto: {formatCurrency(netoTotal)}</span>
+              <span>IVA 19%: {formatCurrency(ivaTotal)}</span>
+              <span className="font-semibold text-slate-700">Total c/IVA: {formatCurrency(totalWithIva)}</span>
+            </div>
+          )}
 
           {/* Shipping (ML only) */}
           {channel === 'mercadolibre' && (
@@ -243,31 +270,19 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
               {overrideShipping && (
                 <input
                   type="number"
-                  value={customShipping}
+                  value={numField(customShipping)}
                   onChange={(e) => setCustomShipping(parseFloat(e.target.value) || 0)}
                   min={0}
                   step="any"
                   className="w-full px-3 py-2 border border-yellow-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500/30 bg-white"
-                  placeholder="Costo de envío manual"
+                  placeholder="0"
                 />
               )}
             </div>
           )}
 
-          {/* Commission 19% + Shipping Options */}
+          {/* Shipping Options */}
           <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-3">
-            {/* Commission checkbox */}
-            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-              <input type="checkbox" checked={commission19}
-                onChange={(e) => setCommission19(e.target.checked)} className="rounded" />
-              <Percent className="w-4 h-4 text-red-500" />
-              <span className="font-medium">Comisión 19% venta</span>
-              {commission19 && (
-                <span className="text-xs text-red-600 font-bold">+{formatCurrency(commissionAmount)}</span>
-              )}
-            </label>
-
-            {/* Shipping type */}
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1.5">Tipo de Entrega</label>
               <div className="grid grid-cols-2 gap-2">
@@ -301,7 +316,7 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">Costo Envío ($)</label>
-                  <input type="number" value={shippingCostManual}
+                  <input type="number" value={numField(shippingCostManual)}
                     onChange={(e) => setShippingCostManual(parseFloat(e.target.value) || 0)}
                     min={0} step="any"
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
@@ -311,59 +326,51 @@ export function SaleModal({ product, onClose, onSold }: SaleModalProps) {
             )}
           </div>
 
-          {/* Margin Breakdown */}
+          {/* Ganancia Bruta Breakdown */}
           <div className="bg-slate-900 rounded-xl p-4 text-white space-y-2">
             <div className="flex items-center gap-2 mb-1">
               <TrendingUp className="w-4 h-4 text-green-400" />
-              <h4 className="text-sm font-semibold">Desglose de Margen</h4>
+              <h4 className="text-sm font-semibold">Desglose de Ganancia</h4>
             </div>
 
             <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Precio Venta ({quantity}x)</span>
-              <span className="font-medium text-white">{formatCurrency(salePrice * quantity)}</span>
+              <span className="text-slate-400">Total Venta (con IVA 19%)</span>
+              <span className="font-medium text-white">{formatCurrency(totalWithIva)}</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Costo Compra ({quantity}x)</span>
+              <span className="text-slate-400">Costo Producto ({quantity}x)</span>
               <span className="text-red-400">-{formatCurrency(purchasePrice * quantity)}</span>
             </div>
-            {channel === 'mercadolibre' && (
-              <>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-400">Comisión ML 19%</span>
-                  <span className="text-red-400">-{formatCurrency(totalCommission)}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-400">Envío ({quantity}x)</span>
-                  <span className="text-red-400">-{formatCurrency(totalShipping)}</span>
-                </div>
-              </>
-            )}
-            {channel === 'directa' && overrideShipping && customShipping > 0 && (
+            {channel === 'mercadolibre' && totalCommission > 0 && (
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Envío ({quantity}x)</span>
-                <span className="text-red-400">-{formatCurrency(totalShipping)}</span>
+                <span className="text-slate-400">Comisión ML 19%</span>
+                <span className="text-red-400">-{formatCurrency(totalCommission)}</span>
               </div>
             )}
-            {commission19 && (
+            {finalShippingCost > 0 && (
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Comisión 19%</span>
-                <span className="text-red-400">+{formatCurrency(commissionAmount)}</span>
-              </div>
-            )}
-            {shippingType === 'despacho' && finalShippingCost > 0 && (
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Envío ({shippingCompany})</span>
-                <span className="text-red-400">+{formatCurrency(finalShippingCost)}</span>
+                <span className="text-slate-400">Costo Envío {shippingType === 'despacho' ? `(${shippingCompany})` : ''}</span>
+                <span className="text-red-400">-{formatCurrency(finalShippingCost)}</span>
               </div>
             )}
 
             <div className="flex justify-between pt-2 border-t border-slate-700">
-              <span className="text-slate-300 font-medium">Total Venta</span>
-              <span className="text-lg font-bold text-white">{formatCurrency(finalTotal)}</span>
+              <span className="text-green-400 font-semibold">GANANCIA BRUTA</span>
+              <span className="text-2xl font-bold text-green-400">{formatCurrency(grossProfit)}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">Margen</span>
+              <span className={`font-medium ${marginPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {marginPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between text-xs pt-1 border-t border-slate-800">
+              <span className="text-slate-500">IVA 19% incluido</span>
+              <span className="text-slate-400">{formatCurrency(ivaTotal)}</span>
             </div>
           </div>
 
-          {totalMargin < 0 && (
+          {grossProfit < 0 && (
             <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-2.5 border border-red-200">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
               <span>Esta venta genera pérdida. Verifica precios o costo de envío.</span>

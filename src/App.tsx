@@ -18,7 +18,7 @@ import { Suppliers } from '@/components/Suppliers';
 import { PurchaseOrders } from '@/components/PurchaseOrders';
 import { SettingsModule } from '@/components/SettingsModule';
 import {
-  Boxes, FileText, History, Receipt, BarChart3, Car, Building2, ClipboardList, Settings,
+  Boxes, FileText, History, Receipt, BarChart3, Truck, Building2, ClipboardList, Settings,
 } from 'lucide-react';
 
 const PAGE_SIZE = 1000;
@@ -188,7 +188,7 @@ function AppInner() {
     { key: 'historial', label: 'Movimientos', icon: History },
     { key: 'costos', label: 'Costos e Insumos', icon: Receipt },
     { key: 'metricas', label: 'Métricas & Reportes', icon: BarChart3 },
-    { key: 'vehiculos', label: 'Vehículos', icon: Car },
+    { key: 'vehiculos', label: 'Tipos y Costos de Envío', icon: Truck },
     { key: 'proveedores', label: 'Proveedores', icon: Building2 },
     { key: 'ordenes', label: 'Órdenes de Compra', icon: ClipboardList },
     { key: 'ajustes', label: 'Ajustes', icon: Settings },
@@ -248,7 +248,7 @@ function AppInner() {
               <OperationalExpenses expenses={expenses} onRefresh={fetchExpenses} />
             )}
             {activeTab === 'metricas' && (
-              <MetricsDashboard movements={movements} expenses={expenses} />
+              <MetricsDashboard movements={movements} expenses={expenses} products={products} />
             )}
             {activeTab === 'vehiculos' && (
               <VehicleModule

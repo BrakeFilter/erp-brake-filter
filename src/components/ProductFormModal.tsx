@@ -68,6 +68,13 @@ export function ProductFormModal({
     initialData ? { ...emptyForm, ...initialData } : emptyForm,
   );
   const [uploading, setUploading] = useState(false);
+
+  // Sync form when initialData changes (fixes edit product empty fields + barcode prefill)
+  useEffect(() => {
+    if (open) {
+      setForm(initialData ? { ...emptyForm, ...initialData } : emptyForm);
+    }
+  }, [open, initialData]);
   const [imageMode, setImageMode] = useState<'upload' | 'camera' | 'url'>('upload');
   const [showBarcodeScan, setShowBarcodeScan] = useState(false);
   const [skuStatus, setSkuStatus] = useState<'idle' | 'checking' | 'taken' | 'ok'>('idle');
@@ -131,7 +138,9 @@ export function ProductFormModal({
     const l = form.length_cm || 0;
     const g = form.weight_g || 0;
     if (h === 0 && w === 0 && l === 0 && g === 0) return 0;
-    return Math.round((h * w * l / 5000) * 1500 + (g / 1000) * 2000);
+    const volWeight = (l * w * h) / 4000;
+    const facturableWeight = Math.max(g, volWeight);
+    return Math.round(facturableWeight * 2 + (g / 1000) * 2000);
   }, [form.height_cm, form.width_cm, form.length_cm, form.weight_g]);
 
   if (!open) return null;
@@ -658,11 +667,11 @@ export function ProductFormModal({
               <div className="mt-3 flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-2">
                 <Truck className="w-4 h-4 text-yellow-400" />
                 <div className="flex-1">
-                  <p className="text-[11px] text-slate-400">Costo envío ML (volumen + peso)</p>
+                  <p className="text-[11px] text-slate-400">Peso facturable (mayor entre físico y volumétrico)</p>
                   <p className="text-sm font-bold text-yellow-400">{formatCurrency(mlShippingPreview)}</p>
                 </div>
                 <p className="text-[10px] text-slate-500 text-right">
-                  (H×W×L / 5000) × $1.500<br/>+ peso × $2.000
+                  Vol = (L×W×H)/4000<br/>Se usa el MAYOR
                 </p>
               </div>
             )}

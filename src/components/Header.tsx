@@ -20,8 +20,16 @@ export function Header({ onNavigateSettings }: HeaderProps) {
       e.preventDefault();
       setInstallPrompt(e as BeforeInstallPromptEvent);
     };
+    const readyHandler = () => {
+      if (window.__pwaInstallEvent) setInstallPrompt(window.__pwaInstallEvent);
+    };
     window.addEventListener('beforeinstallprompt', handler);
-    return () => window.removeEventListener('beforeinstallprompt', handler);
+    window.addEventListener('pwa-install-available', readyHandler);
+    if (window.__pwaInstallEvent) setInstallPrompt(window.__pwaInstallEvent);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handler);
+      window.removeEventListener('pwa-install-available', readyHandler);
+    };
   }, []);
 
   const companyName = companySettings?.company_name || 'BRAKE FILTER';
